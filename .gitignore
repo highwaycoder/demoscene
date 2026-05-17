@@ -1,0 +1,6 @@
+# build output
+/trappedknight
+*.o
+
+# screenshots
+trapped_*.ppm
