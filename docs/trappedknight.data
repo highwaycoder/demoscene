@@ -1,0 +1,413 @@
+#version 330 core
+/* ===========================================================================
+   bg.frag -- a dark, slowly drifting backdrop so the neon path has somewhere
+   to glow against. Deliberately dim. Hot-reloads on save.
+   =========================================================================== */
+
+out vec4 fragColor;
+
+uniform vec2  uRes;
+uniform float uTime;
+
+void main()
+{
+    vec2  uv = (gl_FragCoord.xy - 0.5 * uRes) / uRes.y;
+    float r  = length(uv);
+
+    /* lazy interference of a few sine waves -- a faint nebula */
+    float n = 0.0;
+    n += sin(uv.x * 3.1 + uTime * 0.15);
+    n += sin(uv.y * 2.7 - uTime * 0.11);
+    n += sin((uv.x + uv.y) * 2.3 + uTime * 0.09);
+    n = n / 3.0;
+
+    vec3 col = vec3(0.025, 0.030, 0.055);
+    col += vec3(0.045, 0.025, 0.075) * (0.5 + 0.5 * n);
+    col *= 1.0 - 0.55 * r;                       // vignette toward the edges
+
+    fragColor = vec4(max(col, 0.0), 1.0);
+}
+#version 330 core
+/* ===========================================================================
+   cloud.frag -- glowing disc for one placed piece.
+
+   2D scenes blend additively; 3D scenes use GL_MAX so the sphere cannot blow
+   out.  In 3D a piece fades by how far it sits BELOW the current growth
+   surface (vFront): the outer rind stays bright, the deep interior empties
+   out, so the middle never builds into a fuzzy white haze as the ball grows.
+   Hot-reloads on save.
+   =========================================================================== */
+
+in  vec2  vLocal;
+flat in float vArmy;
+in  float vFront;         // uReveal - shell: 0 at the surface, large = deep in
+in  float vDepth;         // view depth, 0 (far side) .. 1 (near side)
+
+out vec4 fragColor;
+
+uniform vec3  uTint[8];
+uniform float uDim3D;     // 1 in 3D scenes, 0 in 2D
+
+void main()
+{
+    float d = length(vLocal);
+    if (d > 1.0) discard;                              /* circular piece */
+    float disc = smoothstep(1.0, 0.45, d);
+    float glow = exp(-d * d * 3.0);
+
+    int  idx  = clamp(int(vArmy + 0.5), 0, 7);
+    vec3 tint = uTint[idx];
+
+    /* 3D: the outer ~one shell stays full bright, deeper shells fall off
+       fast toward nothing -- the interior fades as the surface passes it */
+    float surf      = mix(1.0, exp(-0.14 * max(vFront - 1.0, 0.0)), uDim3D);
+    /* 3D: the far hemisphere is dimmer, so the sphere reads with depth */
+    float depthFade = mix(1.0, mix(0.35, 1.0, vDepth), uDim3D);
+    /* a subtle, tinted lift on the freshly revealed shell-front */
+    float front = clamp(1.0 - vFront, 0.0, 1.0);
+
+    vec3 col = tint * glow * 0.50;
+    col += mix(tint, vec3(1.0), 0.10) * disc * 1.35;
+    col *= surf * depthFade;
+    col += tint * front * disc * 0.30;
+
+    fragColor = vec4(col, 1.0);
+}
+#version 330 core
+/* ===========================================================================
+   cloud.vert -- places a glowing piece for 2D/3D competitive placement.
+
+   uTangent picks the piece style:
+     0 = camera-facing billboard  -- cheap, rotationally symmetric, never
+         foreshortens (the default).
+     1 = surface-tangent tile     -- the quad lies flat on the sphere, so it
+         turns with the surface and foreshortens toward the silhouette.
+
+   Reveal is by SHELL: a piece appears once uReveal reaches its shell index.
+   Hot-reloads on save.
+   =========================================================================== */
+
+layout(location = 0) in vec2  aCorner;   // shared unit quad: x in {0,1}, y in {-1,1}
+layout(location = 1) in vec3  aPos;      // piece position (z = 0 in 2D scenes)
+layout(location = 2) in vec2  aMeta;     // x = army index, y = shell index
+
+uniform vec3  uCenter;
+uniform float uAz;
+uniform float uEl;
+uniform float uScale;
+uniform vec2  uAspect;
+uniform float uPointR;
+uniform float uReveal;
+uniform float uRadius;
+uniform float uTangent;   // 0 = billboard, 1 = surface-tangent tile
+
+out  vec2  vLocal;
+flat out float vArmy;
+out  float vFront;
+out  float vDepth;
+
+void main()
+{
+    vec2 c = vec2(aCorner.x * 2.0 - 1.0, aCorner.y);   /* centred quad */
+
+    float shell = aMeta.y;
+    if (shell > uReveal) {                       /* not revealed yet -> cull */
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+        vLocal = c; vArmy = aMeta.x; vFront = 0.0; vDepth = 0.5;
+        return;
+    }
+
+    float ce = cos(uEl), se = sin(uEl), ca = cos(uAz), sa = sin(uAz);
+    vec3 dir = vec3(ce * ca, ce * sa, se);       /* origin -> camera */
+    vec3 rt  = vec3(-sa, ca, 0.0);               /* screen right */
+    vec3 up  = cross(dir, rt);                   /* screen up */
+
+    vec3 rel = aPos - uCenter;
+    vec3 q   = rel;
+    if (uTangent > 0.5) {
+        /* lay the quad flat on the sphere surface (its tangent plane) */
+        vec3 nrm = (length(rel) > 1e-4) ? normalize(rel) : vec3(0.0, 0.0, 1.0);
+        vec3 ref = (abs(nrm.z) < 0.9) ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+        vec3 t1  = normalize(cross(ref, nrm));
+        vec3 t2  = cross(nrm, t1);
+        q = rel + (c.x * t1 + c.y * t2) * uPointR;
+    }
+
+    vec2  screen = vec2(dot(q, rt), dot(q, up));
+    float depth  = dot(q, dir);
+    if (uTangent <= 0.5) screen += c * uPointR;  /* camera-facing billboard */
+
+    vLocal = c;
+    vArmy  = aMeta.x;
+    vFront = uReveal - shell;
+    vDepth = clamp(depth / max(uRadius, 1.0) * 0.5 + 0.5, 0.0, 1.0);
+
+    gl_Position = vec4(screen * uScale * uAspect, 0.0, 1.0);
+}
+# leapers.cfg -- leaper definitions for Trapped Knight.
+#
+# One leaper per line:   name = a b c
+# A leaper jumps so the sorted |x|,|y|,|z| of its move equal {a,b,c}.
+# Give two numbers for a flat 2D-style piece (c defaults to 0); give all
+# three for a genuinely 3D piece. Commas are optional. Edit and save --
+# this file hot-reloads, and scenes.cfg refers to these names.
+
+knight   = 1 2
+zebra    = 2 3
+antelope = 3 4
+camel    = 1 3
+giraffe  = 1 4
+ferz     = 1 1
+wazir    = 1 0
+alfil    = 2 2
+dabbaba  = 2 0
+
+# 3D-native -- these step on all three axes at once
+unicorn  = 1 1 1
+wyvern   = 2 1 1
+spider   = 2 1 3
+#version 330 core
+/* ===========================================================================
+   path.frag -- neon glow for a path segment or a placed piece.
+
+   uMode 0: trapped path  -- colour is a cyclic palette running along the path,
+            with an optional comet (uTrail) endlessly retracing the route.
+   uMode 1: competitive   -- colour is the placing army's tint (uTint[army]).
+
+   Rendered with additive blending, so crossings and dense regions bloom.
+   Hot-reloads on save.
+   =========================================================================== */
+
+in vec2       vWorld;
+flat in vec2  vA;
+flat in vec2  vB;
+flat in float vParam;
+flat in float vHot;
+
+out vec4 fragColor;
+
+uniform float uTime;
+uniform float uGlowR;     // glow radius   (board units)
+uniform float uCoreW;     // core halfwidth (board units)
+uniform int   uPalette;
+uniform int   uMode;      // 0 = trapped path, 1 = competitive armies
+uniform vec3  uTint[8];   // per-army colours
+uniform float uTrail;     // <0 = off; else 0..1 comet position along the path
+
+const float TAU = 6.28318530718;
+
+float sdSegment(vec2 p, vec2 a, vec2 b)
+{
+    vec2  pa = p - a, ba = b - a;
+    float h  = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-9), 0.0, 1.0);
+    return length(pa - ba * h);
+}
+
+vec3 palette(float t, int idx)
+{
+    vec3 a = vec3(0.5), b = vec3(0.5), c = vec3(1.0), d = vec3(0.0);
+    if      (idx == 0) d = vec3(0.00, 0.33, 0.67);
+    else if (idx == 1) d = vec3(0.00, 0.10, 0.20);
+    else if (idx == 2){ c = vec3(1.0, 1.0, 0.5); d = vec3(0.80, 0.90, 0.30); }
+    else if (idx == 3){ a = vec3(0.20, 0.20, 0.30); b = vec3(0.70, 0.50, 0.40);
+                        d = vec3(0.00, 0.15, 0.30); }
+    else              { c = vec3(2.0, 1.0, 0.0); d = vec3(0.50, 0.20, 0.25); }
+    return a + b * cos(TAU * (c * t + d));
+}
+
+void main()
+{
+    float dist = sdSegment(vWorld, vA, vB);
+    float core = smoothstep(uCoreW, uCoreW * 0.35, dist);
+    float glow = exp(-dist * dist / (uGlowR * uGlowR) * 9.0);
+
+    vec3 hue;
+    if (uMode == 1) {
+        int idx = clamp(int(vParam + 0.5), 0, 7);
+        hue = uTint[idx];
+    } else {
+        hue = palette(vParam * 2.0 - uTime * 0.08, uPalette);
+    }
+
+    /* trapped paths get a white-hot core; army pieces stay saturated so the
+       territory colours read clearly even where glows pile up */
+    float whiteMix = (uMode == 1) ? 0.12 : 0.55;
+    float coreAmp  = (uMode == 1) ? 1.70 : 1.30;
+    vec3 col  = hue * glow * 0.60;
+    col      += mix(hue, vec3(1.0), whiteMix) * core * coreAmp;
+    col      += vec3(1.0) * vHot * (core + glow * 0.4) * 0.9;
+
+    /* comet: a bright pulse endlessly retracing the trapped-knight path */
+    if (uMode == 0 && uTrail >= 0.0) {
+        float td = abs(vParam - uTrail);
+        td = min(td, 1.0 - td);                       /* wrap around the loop */
+        float tr = exp(-td * td / (0.013 * 0.013));
+        col += mix(hue, vec3(1.0), 0.5) * tr * (core * 2.0 + glow * 0.8);
+    }
+
+    fragColor = vec4(col, 1.0);                        /* additive: GL_ONE,ONE */
+}
+#version 330 core
+/* ===========================================================================
+   path.vert -- expands one instance into a glowing quad.
+
+   An instance is either a path SEGMENT (trapped mode: A != B) or a placed
+   PIECE (competitive mode: A == B, which the fragment shader draws as a disc).
+   The quad is padded by uGlowR so the fragment shader has room for the glow.
+   The whole scene can be slowly rotated by uRot for the cinematic camera.
+   Hot-reloads on save.
+   =========================================================================== */
+
+layout(location = 0) in vec2  aCorner;   // u in {0,1} along, v in {-1,1} across
+layout(location = 1) in vec2  aA;         // segment start / piece position
+layout(location = 2) in vec2  aB;         // segment end   / piece position
+layout(location = 3) in float aParam;     // path: 0..1 position;  comp: army #
+
+uniform vec2  uCam;       // camera centre, board coords
+uniform float uScale;     // board units -> NDC (2 / visible height)
+uniform vec2  uAspect;    // (winH/winW, 1) -- keeps the board isotropic
+uniform float uRot;       // scene rotation (radians)
+uniform float uGlowR;     // glow radius, board units
+uniform float uHead;      // revealed instance count (fractional)
+
+out vec2       vWorld;
+flat out vec2  vA;
+flat out vec2  vB;
+flat out float vParam;
+flat out float vHot;      // ~1 on the freshly-revealed head, 0 behind
+
+void main()
+{
+    float id = float(gl_InstanceID);
+    vec2  A  = aA, B = aB;
+
+    /* progressive reveal */
+    float reveal = uHead - id;
+    if (reveal <= 0.0) {
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);   // cull: outside clip volume
+        vWorld = A; vA = A; vB = B; vParam = aParam; vHot = 0.0;
+        return;
+    }
+    if (reveal < 1.0) B = mix(A, B, reveal);      // no-op for pieces (A == B)
+
+    vec2  d   = B - A;
+    float len = length(d);
+    d = (len > 1e-6) ? d / len : vec2(1.0, 0.0);
+    vec2  n = vec2(-d.y, d.x);
+
+    vec2 base  = mix(A - d * uGlowR, B + d * uGlowR, aCorner.x);
+    vec2 world = base + n * aCorner.y * uGlowR;
+
+    vWorld = world;
+    vA     = A;
+    vB     = B;
+    vParam = aParam;
+    vHot   = clamp(2.0 - reveal, 0.0, 1.0);
+
+    /* world -> rotated -> NDC */
+    vec2  rel = world - uCam;
+    float cs = cos(uRot), sn = sin(uRot);
+    rel = vec2(cs * rel.x - sn * rel.y, sn * rel.x + cs * rel.y);
+    gl_Position = vec4(rel * uScale * uAspect, 0.0, 1.0);
+}
+# scenes.cfg -- Trapped Knight presets.
+# Edit and save while the program runs; it hot-reloads. Cycle scenes with Tab.
+#
+#   mode    = trapped | competitive
+#   dim     = 2 | 3            (competitive only; 3 = growing sphere)
+#   leaper  = a leaper name defined in leapers.cfg (trapped mode)
+#   armies  = comma-separated leaper names from leapers.cfg (competitive)
+#   tint    = comma-separated #rrggbb, one per army (competitive)
+#   pieces  = piece count cap (competitive; up to 800000, also live via - / =)
+#   growth  = shells revealed per second (0 / omit = fast default)
+#   palette = 0..4  (trapped path colours)
+#
+# Note: armies of one long-reach leaper (e.g. antelope) interleave very
+# finely and tend to wash out; mixed leapers give the clearest territories.
+
+[3D Duel]
+mode    = competitive
+dim     = 3
+armies  = knight, knight
+tint    = #ff2a3a, #2a8bff
+pieces  = 80000
+growth  = 88
+
+[3D Three Kingdoms]
+mode    = competitive
+dim     = 3
+armies  = knight, zebra, camel
+tint    = #ff3344, #33ff99, #ffcc33
+pieces  = 120000
+growth  = 75
+
+[3D Beasts]
+mode    = competitive
+dim     = 3
+armies  = unicorn, wyvern, knight
+tint    = #ff44aa, #ffd23a, #44e0ff
+pieces  = 140000
+growth  = 80
+
+[3D Spider vs Wazir]
+mode    = competitive
+dim     = 3
+armies  = spider, wazir
+tint    = #ff3344, #33ff99
+pieces  = 160000
+growth  = 80
+
+[3D Wazir Swarm]
+mode    = competitive
+dim     = 3
+armies  = wazir, wazir, wazir, wazir, wazir, wazir
+tint    = #ff3344, #ffaa33, #ffe033, #44dd66, #33ccff, #bb66ff
+pieces  = 160000
+growth  = 85
+
+[3D Eight Kingdoms]
+mode    = competitive
+dim     = 3
+armies  = knight, knight, knight, knight, knight, knight, knight, knight
+tint    = #ff3344, #ff8a33, #ffe033, #44dd55, #33dddd, #4477ff, #aa55ff, #ee88cc
+pieces  = 240000
+growth  = 110
+
+[3D Colossus]
+mode    = competitive
+dim     = 3
+armies  = knight, zebra
+tint    = #ff2a3a, #2a8bff
+pieces  = 520000
+growth  = 165
+
+[Red vs Black]
+mode    = competitive
+dim     = 2
+armies  = knight, knight
+tint    = #ff2a3a, #2a6bff
+pieces  = 5500
+
+[Three Kingdoms]
+mode    = competitive
+dim     = 2
+armies  = knight, zebra, camel
+tint    = #ff3344, #33ff88, #ffcc33
+pieces  = 9000
+
+[Four-Way War]
+mode    = competitive
+dim     = 2
+armies  = knight, knight, knight, knight
+tint    = #ff3355, #33ddff, #ffdd33, #aa55ff
+pieces  = 13000
+
+[Classic Knight]
+mode    = trapped
+leaper  = knight
+palette = 0
+
+[Zebra Drift]
+mode    = trapped
+leaper  = zebra
+palette = 3

@@ -54,6 +54,21 @@ make
 Run it from this directory — it loads its shaders, `leapers.cfg` and
 `scenes.cfg` by relative path (`leapers.cfg` is required). On startup it prints, e.g. `[walk] Knight : 2016 squares … square 2084`.
 
+## Web version
+
+A WebAssembly + WebGL2 build runs in any modern browser, no install needed:
+
+> **https://highwaycoder.github.io/demoscene/**
+
+It is the *same* `main.c` compiled with [Emscripten](https://emscripten.org)
+(`#ifdef __EMSCRIPTEN__` swaps in the browser main loop, WebGL2 shader headers,
+and an HTML control panel) — so the maths is identical to the desktop build.
+To build it yourself:
+
+```sh
+./build_web.sh        # needs the Emscripten SDK; outputs to docs/
+```
+
 ## Scenes
 
 Everything on screen is driven by **`scenes.cfg`** — a plain, hand-editable

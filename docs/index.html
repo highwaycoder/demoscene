@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Trapped Knight</title>
+<style>
+  :root { --accent:#5fd4ff; --ink:#e7e9f3; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:#06060d; overflow:hidden;
+              font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+              color:var(--ink); }
+  #canvas { position:fixed; inset:0; width:100vw; height:100vh; display:block;
+            background:#06060d; }
+  #panel {
+    position:fixed; top:14px; left:14px; width:248px; padding:14px 14px 12px;
+    background:rgba(12,13,24,0.86); border:1px solid rgba(120,140,200,0.22);
+    border-radius:12px; backdrop-filter:blur(6px);
+    box-shadow:0 8px 30px rgba(0,0,0,0.5); user-select:none;
+  }
+  #panel h1 { margin:0 0 2px; font-size:15px; letter-spacing:0.3px; }
+  #panel .sub { margin:0 0 11px; font-size:11px; color:#8b90a8; }
+  label.fld { display:block; font-size:10.5px; text-transform:uppercase;
+              letter-spacing:0.7px; color:#8b90a8; margin:9px 0 4px; }
+  select, button { font:inherit; color:var(--ink); }
+  select {
+    width:100%; padding:6px 7px; font-size:12.5px;
+    background:#1a1c30; border:1px solid rgba(120,140,200,0.28);
+    border-radius:7px; cursor:pointer;
+  }
+  .row { display:flex; gap:5px; margin-top:5px; flex-wrap:wrap; }
+  button {
+    flex:1 1 auto; padding:6px 4px; font-size:11.5px; cursor:pointer;
+    background:#1a1c30; border:1px solid rgba(120,140,200,0.22);
+    border-radius:7px; transition:background .12s,border-color .12s;
+    white-space:nowrap;
+  }
+  button:hover { background:#262a44; border-color:rgba(120,140,200,0.5); }
+  button:active { background:#33384f; }
+  button.mini { flex:0 0 30px; font-weight:600; }
+  .grp { display:flex; align-items:center; gap:5px; margin-top:5px; }
+  .grp span { font-size:11px; color:#8b90a8; flex:1 1 auto; }
+  #status { margin-top:11px; font-size:10.5px; color:#8b90a8;
+            line-height:1.45; word-break:break-word; min-height:28px; }
+  #hint { margin-top:6px; font-size:10.5px; color:#6f748c; }
+  #panel.disabled { opacity:0.55; pointer-events:none; }
+  #loading {
+    position:fixed; inset:0; display:flex; align-items:center;
+    justify-content:center; flex-direction:column; gap:10px;
+    background:#06060d; color:#8b90a8; font-size:14px; z-index:20;
+  }
+  #loading .dot { width:30px; height:30px; border-radius:50%;
+    border:3px solid rgba(95,212,255,0.25); border-top-color:var(--accent);
+    animation:spin 0.9s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<canvas id="canvas" tabindex="0"></canvas>
+
+<div id="loading"><div class="dot"></div><div>loading the knights…</div></div>
+
+<div id="panel" class="disabled">
+  <h1>Trapped Knight</h1>
+  <p class="sub">spiral-board leapers, in your browser</p>
+
+  <label class="fld" for="scene">Scene</label>
+  <select id="scene"></select>
+
+  <div class="row" style="margin-top:8px;">
+    <button type="button" data-k="32">Pause</button>
+    <button type="button" data-k="82">Restart</button>
+    <button type="button" data-k="66">Fit</button>
+  </div>
+  <div class="row">
+    <button type="button" data-k="67">Cinematic</button>
+    <button type="button" data-k="79">Auto-cycle</button>
+  </div>
+  <div class="row">
+    <button type="button" data-k="84">Comet trail</button>
+    <button type="button" data-k="77">Surface tiles</button>
+  </div>
+
+  <div class="grp"><span>Reveal speed</span>
+    <button type="button" class="mini" data-k="264">&minus;</button>
+    <button type="button" class="mini" data-k="265">+</button></div>
+  <div class="grp"><span>Step shell</span>
+    <button type="button" class="mini" data-k="44">&minus;</button>
+    <button type="button" class="mini" data-k="46">+</button></div>
+  <div class="grp"><span>Piece count</span>
+    <button type="button" class="mini" data-k="45">&minus;</button>
+    <button type="button" class="mini" data-k="61">+</button></div>
+
+  <label class="fld">Palette</label>
+  <div class="row">
+    <button type="button" class="mini" data-k="49">1</button>
+    <button type="button" class="mini" data-k="50">2</button>
+    <button type="button" class="mini" data-k="51">3</button>
+    <button type="button" class="mini" data-k="52">4</button>
+    <button type="button" class="mini" data-k="53">5</button>
+    <button type="button" data-k="70">Fullscreen</button>
+  </div>
+
+  <div id="status">starting…</div>
+  <div id="hint">Drag to rotate · scroll to zoom</div>
+</div>
+
+<script>
+  /* called from the C program (via EM_ASM) once it has booted */
+  var tkRuntimeReady = false;
+
+  window.tkAddScene = function (i, name) {
+    var opt = document.createElement('option');
+    opt.value = i; opt.textContent = name;
+    document.getElementById('scene').appendChild(opt);
+  };
+  window.tkReady = function (cur) {
+    tkRuntimeReady = true;
+    document.getElementById('scene').value = cur;
+    document.getElementById('panel').classList.remove('disabled');
+    document.getElementById('loading').style.display = 'none';
+    fitCanvas();
+  };
+  window.tkStatus = function (s) {
+    document.getElementById('status').textContent = s;
+  };
+
+  function key(code) {
+    if (tkRuntimeReady && Module && Module._tk_key) Module._tk_key(code);
+  }
+  function fitCanvas() {
+    var c = document.getElementById('canvas');
+    var w = window.innerWidth, h = window.innerHeight;
+    c.width = w; c.height = h;
+    if (tkRuntimeReady && Module && Module._tk_resize) Module._tk_resize(w, h);
+  }
+
+  document.querySelectorAll('button[data-k]').forEach(function (b) {
+    b.addEventListener('click', function () { key(+b.dataset.k); });
+  });
+  document.getElementById('scene').addEventListener('change', function () {
+    if (tkRuntimeReady && Module && Module._tk_scene)
+      Module._tk_scene(+this.value);
+  });
+  window.addEventListener('resize', fitCanvas);
+
+  var Module = {
+    canvas: document.getElementById('canvas'),
+    print:    function (t) { console.log(t); },
+    printErr: function (t) { console.warn(t); },
+  };
+</script>
+<script src="trappedknight.js"></script>
+</body>
+</html>

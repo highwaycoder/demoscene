@@ -13,16 +13,21 @@
                              revealed shell by shell as a growing glowing sphere.
 
    The walk / placement is computed once on the CPU; the result is drawn as
-   instanced glowing quads on the GPU.  The pattern is the point -- the reveal
-   is fast by default; its growth RATE (shells/sec) is the thing to tune.
+   instanced glowing quads on the GPU.
 
-   Build:  make            (needs build-essential, libglfw3-dev, libglew-dev)
-   Run:    ./trappedknight                  (run from this directory)
-   bg.frag / path.* / cloud.* / scenes.cfg all hot-reload on save.
+   Builds two ways from this one source:
+     Desktop:  make                 -- GLFW + OpenGL 3.3 core + GLEW
+     Web:      ./build_web.sh        -- Emscripten -> WebAssembly + WebGL2
    =========================================================================== */
 #define _POSIX_C_SOURCE 200809L
 
-#include <GL/glew.h>
+#ifdef __EMSCRIPTEN__
+  #include <emscripten.h>
+  #include <emscripten/html5.h>
+  #include <GLES3/gl3.h>
+#else
+  #include <GL/glew.h>
+#endif
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 
@@ -76,8 +81,7 @@ static void sort3(int *p)
 }
 
 /* 3D leaper moves: every (dx,dy,dz) whose sorted |components| match the
-   leaper's {a,b,c}.  {a,b,0} pieces stay 2D-style; {1,1,1} and friends are
-   genuinely three-dimensional. */
+   leaper's {a,b,c}. */
 static int gen_moves_3d(int a, int b, int c, int out[48][3])
 {
     int tgt[3] = { a, b, c };
@@ -132,7 +136,16 @@ static void build_spiral_table(int maxn)
 }
 
 /* ===== shell-ordered 3D lattice =========================================== */
-#define SHELL3D 100
+/* the web build uses smaller tables to keep memory and WebGL load modest */
+#ifdef __EMSCRIPTEN__
+  #define SHELL3D    70
+  #define MAX_PIECE  250000
+  #define SPIRAL_MAX 900000
+#else
+  #define SHELL3D    100
+  #define MAX_PIECE  800000
+  #define SPIRAL_MAX 2600000
+#endif
 typedef struct { short x, y, z; } Cell3;
 static Cell3 *gCell3 = NULL;
 static int    gCell3N = 0;
@@ -165,7 +178,6 @@ static void build_cell3_table(void)
 
 #define GRID_R    850
 #define MOVE_CAP  120000
-#define MAX_PIECE 800000
 
 /* ===== trapped-knight walk ================================================ */
 typedef struct { float x, y; } Pt;
@@ -360,17 +372,47 @@ static char *read_file(const char *path)
     return buf;
 }
 
+#ifndef __EMSCRIPTEN__
 static time_t file_mtime(const char *path)
 {
     struct stat st;
     return (stat(path, &st) == 0) ? st.st_mtime : 0;
 }
+#endif
+
+#ifdef __EMSCRIPTEN__
+/* rewrite a desktop GLSL 3.30 shader as WebGL2 (GLSL ES 3.00): swap the
+   #version line and add the precision qualifiers ES requires */
+static char *web_shader(const char *src)
+{
+    const char *body = src;
+    if (strncmp(src, "#version 330 core", 17) == 0) {
+        body = src + 17;
+        while (*body == '\r' || *body == '\n') body++;
+    }
+    static const char *hdr =
+        "#version 300 es\nprecision highp float;\nprecision highp int;\n";
+    size_t n = strlen(hdr) + strlen(body) + 1;
+    char *out = malloc(n);
+    snprintf(out, n, "%s%s", hdr, body);
+    return out;
+}
+#endif
 
 static GLuint compile_shader(GLenum type, const char *src)
 {
+#ifdef __EMSCRIPTEN__
+    char *webbed = web_shader(src);
+    const char *use = webbed;
+#else
+    const char *use = src;
+#endif
     GLuint s = glCreateShader(type);
-    glShaderSource(s, 1, &src, NULL);
+    glShaderSource(s, 1, &use, NULL);
     glCompileShader(s);
+#ifdef __EMSCRIPTEN__
+    free(webbed);
+#endif
     GLint ok = 0;
     glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
     if (!ok) {
@@ -487,8 +529,7 @@ static void scene_defaults(Scene *s)
 
 /* Parse leapers.cfg lines "name = a b c"; returns the leaper count.
    Returns 0 (roster left untouched) if the file is missing or has no valid
-   entries -- there is NO built-in fallback, so a running program is itself
-   proof that leapers.cfg was read. */
+   entries -- there is NO built-in fallback. */
 static int parse_leapers(void)
 {
     char *txt = read_file("leapers.cfg");
@@ -671,8 +712,10 @@ static void build_instances(void)
 
 /* ===== camera + animation state =========================================== */
 static int    winW = 1280, winH = 720;
-static int    fullscreen = 0, vsync = 1, shotReq = 0;
-static int    sx, sy, sw, sh;
+static int    vsync = 1, shotReq = 0;
+#ifndef __EMSCRIPTEN__
+static int    fullscreen = 0, sx, sy, sw, sh;
+#endif
 static int    gPalette = 0;
 static int    gPaused = 0, gCine = 1, gAutoCycle = 0, gTrail = 0, gStepMode = 0;
 static int    gTangent = 0;                 /* 0 = billboard, 1 = surface tile */
@@ -687,6 +730,18 @@ static float  gHead = 0.0f;                 /* trapped: revealed instances */
 static float  gReveal = 0.0f, gShellRate = 60.0f;  /* competitive: shells */
 static int    gPieceCap = 6000;             /* competitive: piece count cap */
 static float  gGlowR = 0.42f, gCoreW = 0.05f, gPointR = 0.55f;
+
+/* ----- loop state (file-scope so the browser frame callback can see it) --- */
+static GLFWwindow *gWin = NULL;
+static double      gPrev = 0.0, gTitleAcc = 0.0;
+static int         gFrames = 0;
+static long        gTotalFrames = 0;
+static int         gBench = 0, gShotMode = 0;
+static float       gShotFrac = 1.0f;
+static const char *gRend = NULL;
+#ifndef __EMSCRIPTEN__
+static time_t gMtBg, gMtPv, gMtPf, gMtCv, gMtCf, gMtSc, gMtLc;
+#endif
 
 static void fit_camera(void)
 {
@@ -737,7 +792,6 @@ static void apply_scene(int idx)
         rebuild_competitive();
         gReveal = 0.0f;
         gPointR = (s->dim == 3) ? 0.85f : 0.55f;
-        /* fast default -- about 7 'up' steps above the old baseline */
         gShellRate = (s->growth > 0.0f) ? s->growth
                                         : (float)(gMaxShell + 1) / 0.6f * 6.2749f;
         gBaseEl = (s->dim == 3) ? 0.42f : 1.5708f;
@@ -750,9 +804,10 @@ static void apply_scene(int idx)
     printf("[scene] %d/%d  \"%s\"\n", idx + 1, gSceneN, s->name);
 }
 
-/* ===== screenshot ========================================================= */
+/* ===== screenshot (desktop only) ========================================== */
 static void save_screenshot(void)
 {
+#ifndef __EMSCRIPTEN__
     unsigned char *px = malloc((size_t)winW * winH * 3);
     if (!px) return;
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
@@ -769,6 +824,7 @@ static void save_screenshot(void)
         fprintf(stderr, "[shot] saved %s\n", name);
     }
     free(px);
+#endif
 }
 
 static void print_help(void)
@@ -789,10 +845,8 @@ static void print_help(void)
     "   left-drag    rotate the view (orbit in 3D)\n"
     "   w a s d      pan      z / x  zoom      b  fit\n"
     "   [ / ]        glow / piece size       1..5  palette\n"
-    "   v  vsync     f  fullscreen      g  screenshot\n"
-    "   h  help      esc / q  quit\n"
-    "  ----------------------------------------------------\n"
-    "   bg.frag / path.* / cloud.* / scenes.cfg hot-reload.\n");
+    "   f  fullscreen      h  help      esc / q  quit\n"
+    "  ----------------------------------------------------\n");
 }
 
 /* ===== callbacks ========================================================== */
@@ -842,6 +896,9 @@ static void on_key(GLFWwindow *win, int key, int sc, int action, int mods)
     case GLFW_KEY_B:     if (tap) { fit_camera(); gCine = 1; }              break;
     case GLFW_KEY_V:     if (tap) { vsync ^= 1; glfwSwapInterval(vsync); }  break;
     case GLFW_KEY_F:     if (tap) {
+#ifdef __EMSCRIPTEN__
+            emscripten_request_fullscreen("#canvas", 1);
+#else
             if (!fullscreen) {
                 glfwGetWindowPos(win, &sx, &sy);
                 glfwGetWindowSize(win, &sw, &sh);
@@ -854,6 +911,7 @@ static void on_key(GLFWwindow *win, int key, int sc, int action, int mods)
                 glfwSetWindowMonitor(win, NULL, sx, sy, sw, sh, 0);
                 fullscreen = 0;
             }
+#endif
         } break;
     case GLFW_KEY_1: if (tap) gPalette = 0; break;
     case GLFW_KEY_2: if (tap) gPalette = 1; break;
@@ -879,17 +937,17 @@ static void on_key(GLFWwindow *win, int key, int sc, int action, int mods)
     case GLFW_KEY_PERIOD:                    /* step the reveal +1 shell */
         if (gMode == MODE_COMPETITIVE) {
             gStepMode = 1;
-            int sh = (int)(gReveal + 0.5f) + 1;
-            if (sh > gMaxShell + 1) sh = gMaxShell + 1;
-            gReveal = (float)sh;
+            int shp = (int)(gReveal + 0.5f) + 1;
+            if (shp > gMaxShell + 1) shp = gMaxShell + 1;
+            gReveal = (float)shp;
         }
         break;
     case GLFW_KEY_COMMA:                     /* step the reveal -1 shell */
         if (gMode == MODE_COMPETITIVE) {
             gStepMode = 1;
-            int sh = (int)(gReveal + 0.5f) - 1;
-            if (sh < 0) sh = 0;
-            gReveal = (float)sh;
+            int shm = (int)(gReveal + 0.5f) - 1;
+            if (shm < 0) shm = 0;
+            gReveal = (float)shm;
         }
         break;
     case GLFW_KEY_EQUAL:                     /* more pieces -> bigger sphere */
@@ -947,17 +1005,184 @@ static void u2(GLuint p, const char *n, float a, float b)
 static void u3(GLuint p, const char *n, float a, float b, float c)
 { glUniform3f(glGetUniformLocation(p, n), a, b, c); }
 
+/* ===== browser control hooks ============================================== */
+#ifdef __EMSCRIPTEN__
+/* the HTML control panel drives the app through these.  tk_key reuses the
+   whole keyboard handler, so a button is just a synthetic key press. */
+EMSCRIPTEN_KEEPALIVE void tk_key(int key) { on_key(gWin, key, 0, GLFW_PRESS, 0); }
+EMSCRIPTEN_KEEPALIVE void tk_scene(int i) { apply_scene(i); }
+EMSCRIPTEN_KEEPALIVE void tk_resize(int w, int h)
+{
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
+    winW = w; winH = h;
+    glViewport(0, 0, w, h);
+    fit_camera();
+}
+#endif
+
+/* ===== per-frame body ===================================================== */
+static void frame(void)
+{
+    double now = glfwGetTime();
+    double dt  = now - gPrev;
+    gPrev = now;
+    int dim3 = (gMode == MODE_COMPETITIVE && gScenes[gCurScene].dim == 3);
+
+    if (!gPaused) {
+        gTime += dt;
+        if (gMode == MODE_COMPETITIVE && !gStepMode &&
+            gReveal <= (float)gMaxShell + 1.0f)
+            gReveal += gShellRate * (float)dt;
+    }
+    int revealed = (gMode == MODE_TRAPPED) || (gReveal > (float)gMaxShell);
+    if (revealed && !gPaused && !gStepMode) {
+        gHoldTimer += dt;
+        if (gAutoCycle && gHoldTimer > gHoldTime && gSceneN > 1)
+            apply_scene(gCurScene + 1);
+    }
+
+#ifndef __EMSCRIPTEN__
+    /* hot-reload of shaders / configs (desktop only -- web files are static) */
+    time_t b  = file_mtime("bg.frag");
+    time_t pv = file_mtime("path.vert"),  pf = file_mtime("path.frag");
+    time_t cv = file_mtime("cloud.vert"), cf = file_mtime("cloud.frag");
+    time_t scf = file_mtime("scenes.cfg"), lcf = file_mtime("leapers.cfg");
+    if (b != gMtBg) { gMtBg = b;
+        if (reload_prog(&gBgProg, NULL, "bg.frag", FS_VERT))
+            fprintf(stderr, "[shader] bg reloaded\n"); }
+    if (pv != gMtPv || pf != gMtPf) { gMtPv = pv; gMtPf = pf;
+        if (reload_prog(&gPathProg, "path.vert", "path.frag", NULL))
+            fprintf(stderr, "[shader] path reloaded\n"); }
+    if (cv != gMtCv || cf != gMtCf) { gMtCv = cv; gMtCf = cf;
+        if (reload_prog(&gCloudProg, "cloud.vert", "cloud.frag", NULL))
+            fprintf(stderr, "[shader] cloud reloaded\n"); }
+    if (scf != gMtSc || lcf != gMtLc) { gMtSc = scf; gMtLc = lcf;
+        if (parse_leapers()) {
+            parse_scenes();
+            apply_scene(gCurScene);
+            gHead = (float)gSegCount;
+            gReveal = (float)gMaxShell + 2.0f;
+            fprintf(stderr, "[config] reloaded\n");
+        } else {
+            fprintf(stderr, "[config] leapers.cfg unreadable -- kept previous\n");
+        }
+    }
+#endif
+
+    /* cinematic camera */
+    if (gCine) {
+        gAz += (float)dt * (dim3 ? 0.22f : 0.09f);
+        gWorldH = gBaseWorldH * (1.0f + 0.06f * sinf((float)gTime * 0.20f));
+        if (dim3)
+            gEl = gBaseEl + 0.18f * sinf((float)gTime * 0.13f);
+    }
+
+    float trail = -1.0f;
+    if (gTrail && gMode == MODE_TRAPPED)
+        trail = (float)fmod(gTime * 0.16, 1.0);
+
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    glDisable(GL_BLEND);
+    glUseProgram(gBgProg);
+    u2(gBgProg, "uRes", (float)winW, (float)winH);
+    uf(gBgProg, "uTime", (float)gTime);
+    glBindVertexArray(gBgVAO);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_ONE, GL_ONE);
+    glBlendEquation(dim3 ? GL_MAX : GL_FUNC_ADD);   /* MAX: no 3D whiteout */
+    if (gMode == MODE_TRAPPED && gSegCount > 0) {
+        glUseProgram(gPathProg);
+        u2(gPathProg, "uCam", gCamX, gCamY);
+        uf(gPathProg, "uScale", 2.0f / gWorldH);
+        u2(gPathProg, "uAspect", (float)winH / (float)winW, 1.0f);
+        uf(gPathProg, "uRot", gAz);
+        uf(gPathProg, "uGlowR", gGlowR);
+        uf(gPathProg, "uCoreW", gCoreW);
+        uf(gPathProg, "uHead", gHead);
+        uf(gPathProg, "uTime", (float)gTime);
+        uf(gPathProg, "uTrail", trail);
+        ui(gPathProg, "uPalette", gPalette);
+        ui(gPathProg, "uMode", 0);
+        glUniform3fv(glGetUniformLocation(gPathProg, "uTint"), 8, &gTint[0][0]);
+        glBindVertexArray(gPathVAO);
+        glDrawArraysInstanced(GL_TRIANGLES, 0, 6, gSegCount);
+    } else if (gMode == MODE_COMPETITIVE && gPieceN > 0) {
+        glUseProgram(gCloudProg);
+        u3(gCloudProg, "uCenter", gCamX, gCamY, gCamZ);
+        uf(gCloudProg, "uAz", gAz);
+        uf(gCloudProg, "uEl", gEl);
+        uf(gCloudProg, "uScale", 2.0f / gWorldH);
+        u2(gCloudProg, "uAspect", (float)winH / (float)winW, 1.0f);
+        uf(gCloudProg, "uPointR", gPointR);
+        uf(gCloudProg, "uReveal", gReveal);
+        uf(gCloudProg, "uRadius", gRadius);
+        uf(gCloudProg, "uDim3D", dim3 ? 1.0f : 0.0f);
+        uf(gCloudProg, "uTangent", (gTangent && dim3) ? 1.0f : 0.0f);
+        glUniform3fv(glGetUniformLocation(gCloudProg, "uTint"), 8, &gTint[0][0]);
+        glBindVertexArray(gCloudVAO);
+        glDrawArraysInstanced(GL_TRIANGLES, 0, 6, gPieceN);
+    }
+    glBlendEquation(GL_FUNC_ADD);
+    glDisable(GL_BLEND);
+
+    if (gShotMode && gTotalFrames == 3) shotReq = 1;
+    if (shotReq) {
+        save_screenshot();
+        shotReq = 0;
+        if (gShotMode) glfwSetWindowShouldClose(gWin, 1);
+    }
+
+    glfwSwapBuffers(gWin);
+    glfwPollEvents();
+
+    gFrames++;
+    gTotalFrames++;
+    gTitleAcc += dt;
+    if (gTitleAcc >= 0.5) {
+        int count = (gMode == MODE_TRAPPED) ? gSegCount : gPieceN;
+        char rev[32] = "";
+        if (gMode == MODE_COMPETITIVE) {
+            int sh = (int)gReveal;
+            if (sh > gMaxShell) sh = gMaxShell;
+            snprintf(rev, sizeof rev, "  shell %d/%d", sh, gMaxShell);
+        }
+        char title[256];
+        snprintf(title, sizeof title,
+            "Trapped Knight  |  \"%s\" [%s%s]  |  %d items%s  |  %.0f fps%s%s",
+            gScenes[gCurScene].name,
+            gMode == MODE_COMPETITIVE ? "competitive" : "trapped",
+            dim3 ? " 3D" : "", count, rev, gFrames / gTitleAcc,
+            gStepMode ? "  STEP" : (gAutoCycle ? "  cycle" : ""),
+            gPaused ? "  [PAUSED]" : "");
+#ifdef __EMSCRIPTEN__
+        EM_ASM({ if (window.tkStatus) tkStatus(UTF8ToString($0)); }, title);
+#else
+        glfwSetWindowTitle(gWin, title);
+        if (gBench)
+            fprintf(stderr, "[fps] %.0f  (%s)\n",
+                    gFrames / gTitleAcc, gRend ? gRend : "?");
+#endif
+        gFrames = 0;
+        gTitleAcc = 0.0;
+    }
+}
+
 /* ===== main =============================================================== */
 int main(void)
 {
-    int bench    = (getenv("TK_BENCH") != NULL);
+    gBench = (getenv("TK_BENCH") != NULL);
     const char *shotEnv = getenv("TK_SHOT");
-    int   shotMode = (shotEnv != NULL);
-    float shotFrac = (shotEnv && atof(shotEnv) > 0.0 && atof(shotEnv) < 1.0)
-                     ? (float)atof(shotEnv) : 1.0f;
+    gShotMode = (shotEnv != NULL);
+    gShotFrac = (shotEnv && atof(shotEnv) > 0.0 && atof(shotEnv) < 1.0)
+                ? (float)atof(shotEnv) : 1.0f;
     int startScene = getenv("TK_SCENE") ? atoi(getenv("TK_SCENE")) : 0;
     if (getenv("TK_TILES")) gTangent = 1;
 
+#ifndef __EMSCRIPTEN__
     {
         struct stat dxg;
         if (stat("/dev/dxg", &dxg) == 0) {
@@ -965,6 +1190,7 @@ int main(void)
             setenv("MESA_LOADER_DRIVER_OVERRIDE", "d3d12", 0);
         }
     }
+#endif
 
     glfwSetErrorCallback(on_error);
 #ifdef GLFW_PLATFORM_X11
@@ -973,40 +1199,45 @@ int main(void)
 #endif
     if (!glfwInit()) { fprintf(stderr, "glfwInit failed\n"); return 1; }
 
+#ifdef __EMSCRIPTEN__
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_ES_API);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
+#else
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
+#endif
 
-    GLFWwindow *win = glfwCreateWindow(winW, winH, "Trapped Knight", NULL, NULL);
-    if (!win) {
-        fprintf(stderr, "window / OpenGL 3.3 context creation failed\n");
+    gWin = glfwCreateWindow(winW, winH, "Trapped Knight", NULL, NULL);
+    if (!gWin) {
+        fprintf(stderr, "window / GL context creation failed\n");
         glfwTerminate();
         return 1;
     }
-    glfwMakeContextCurrent(win);
-    if (bench) vsync = 0;
+    glfwMakeContextCurrent(gWin);
+    if (gBench) vsync = 0;
     glfwSwapInterval(vsync);
 
+#ifndef __EMSCRIPTEN__
     glewExperimental = GL_TRUE;
     GLenum ge = glewInit();
     if (ge != GLEW_OK) fprintf(stderr, "[glew] %s\n", glewGetErrorString(ge));
     while (glGetError() != GL_NO_ERROR) { }
+#endif
 
-    const char *rend = (const char *)glGetString(GL_RENDERER);
+    gRend = (const char *)glGetString(GL_RENDERER);
     printf("[gl] renderer: %s\n[gl] version : %s\n",
-           rend, (const char *)glGetString(GL_VERSION));
-    if (rend && strstr(rend, "llvmpipe"))
-        printf("[gl] NOTE: software renderer. For GPU acceleration set "
-               "GALLIUM_DRIVER=d3d12 (WSL) or update your graphics drivers.\n");
+           gRend, (const char *)glGetString(GL_VERSION));
 
-    glfwGetFramebufferSize(win, &winW, &winH);
+    glfwGetFramebufferSize(gWin, &winW, &winH);
     glViewport(0, 0, winW, winH);
-    glfwSetFramebufferSizeCallback(win, on_fbsize);
-    glfwSetKeyCallback(win, on_key);
-    glfwSetScrollCallback(win, on_scroll);
-    glfwSetMouseButtonCallback(win, on_mousebutton);
-    glfwSetCursorPosCallback(win, on_cursorpos);
+    glfwSetFramebufferSizeCallback(gWin, on_fbsize);
+    glfwSetKeyCallback(gWin, on_key);
+    glfwSetScrollCallback(gWin, on_scroll);
+    glfwSetMouseButtonCallback(gWin, on_mousebutton);
+    glfwSetCursorPosCallback(gWin, on_cursorpos);
 
     const float quad[12] = { 0,-1,  1,-1,  1,1,   0,-1,  1,1,  0,1 };
     glGenVertexArrays(1, &gBgVAO);
@@ -1059,12 +1290,14 @@ int main(void)
         glfwTerminate();
         return 1;
     }
-    time_t mtBg = file_mtime("bg.frag");
-    time_t mtPv = file_mtime("path.vert"),  mtPf = file_mtime("path.frag");
-    time_t mtCv = file_mtime("cloud.vert"), mtCf = file_mtime("cloud.frag");
-    time_t mtSc = file_mtime("scenes.cfg"), mtLc = file_mtime("leapers.cfg");
+#ifndef __EMSCRIPTEN__
+    gMtBg = file_mtime("bg.frag");
+    gMtPv = file_mtime("path.vert");  gMtPf = file_mtime("path.frag");
+    gMtCv = file_mtime("cloud.vert"); gMtCf = file_mtime("cloud.frag");
+    gMtSc = file_mtime("scenes.cfg"); gMtLc = file_mtime("leapers.cfg");
+#endif
 
-    build_spiral_table(2600000);
+    build_spiral_table(SPIRAL_MAX);
     build_cell3_table();
     for (int a = 0; a < 8; a++)
         for (int c = 0; c < 3; c++) gTint[a][c] = DEF_TINT[a][c];
@@ -1078,161 +1311,27 @@ int main(void)
     apply_scene(startScene);
     print_help();
 
-    if (shotMode) {
+#ifdef __EMSCRIPTEN__
+    /* hand the scene list to the HTML control panel */
+    for (int i = 0; i < gSceneN; i++)
+        EM_ASM({ if (window.tkAddScene) tkAddScene($0, UTF8ToString($1)); },
+               i, gScenes[i].name);
+    EM_ASM({ if (window.tkReady) tkReady($0); }, gCurScene);
+#endif
+
+    if (gShotMode) {
         gHead = (float)gSegCount;
-        gReveal = (shotFrac >= 1.0f) ? (float)gMaxShell + 2.0f
-                                     : (float)gMaxShell * shotFrac;
+        gReveal = (gShotFrac >= 1.0f) ? (float)gMaxShell + 2.0f
+                                      : (float)gMaxShell * gShotFrac;
         gTime = 20.0; gAz = 0.7f;
     }
 
-    double prev = glfwGetTime(), titleAcc = 0.0;
-    int    frames = 0;
-    long   totalFrames = 0;
+    gPrev = glfwGetTime();
 
-    while (!glfwWindowShouldClose(win)) {
-        double now = glfwGetTime();
-        double dt  = now - prev;
-        prev = now;
-        int dim3 = (gMode == MODE_COMPETITIVE && gScenes[gCurScene].dim == 3);
-
-        if (!gPaused) {
-            gTime += dt;
-            if (gMode == MODE_COMPETITIVE && !gStepMode &&
-                gReveal <= (float)gMaxShell + 1.0f)
-                gReveal += gShellRate * (float)dt;
-        }
-        int revealed = (gMode == MODE_TRAPPED) ||
-                       (gReveal > (float)gMaxShell);
-        if (revealed && !gPaused && !gStepMode) {
-            gHoldTimer += dt;
-            if (gAutoCycle && gHoldTimer > gHoldTime && gSceneN > 1)
-                apply_scene(gCurScene + 1);
-        }
-
-        /* hot-reload */
-        time_t b  = file_mtime("bg.frag");
-        time_t pv = file_mtime("path.vert"),  pf = file_mtime("path.frag");
-        time_t cv = file_mtime("cloud.vert"), cf = file_mtime("cloud.frag");
-        time_t scf = file_mtime("scenes.cfg"), lcf = file_mtime("leapers.cfg");
-        if (b != mtBg) { mtBg = b;
-            if (reload_prog(&gBgProg, NULL, "bg.frag", FS_VERT))
-                fprintf(stderr, "[shader] bg reloaded\n"); }
-        if (pv != mtPv || pf != mtPf) { mtPv = pv; mtPf = pf;
-            if (reload_prog(&gPathProg, "path.vert", "path.frag", NULL))
-                fprintf(stderr, "[shader] path reloaded\n"); }
-        if (cv != mtCv || cf != mtCf) { mtCv = cv; mtCf = cf;
-            if (reload_prog(&gCloudProg, "cloud.vert", "cloud.frag", NULL))
-                fprintf(stderr, "[shader] cloud reloaded\n"); }
-        if (scf != mtSc || lcf != mtLc) { mtSc = scf; mtLc = lcf;
-            if (parse_leapers()) {
-                parse_scenes();
-                apply_scene(gCurScene);
-                gHead = (float)gSegCount;
-                gReveal = (float)gMaxShell + 2.0f;   /* show the edit at once */
-                fprintf(stderr, "[config] reloaded\n");
-            } else {
-                fprintf(stderr, "[config] leapers.cfg unreadable -- "
-                                "kept the previous roster\n");
-            }
-        }
-
-        /* cinematic camera */
-        if (gCine) {
-            gAz += (float)dt * (dim3 ? 0.22f : 0.09f);
-            gWorldH = gBaseWorldH * (1.0f + 0.06f * sinf((float)gTime * 0.20f));
-            if (dim3)
-                gEl = gBaseEl + 0.18f * sinf((float)gTime * 0.13f);
-        }
-
-        float trail = -1.0f;
-        if (gTrail && gMode == MODE_TRAPPED)
-            trail = (float)fmod(gTime * 0.16, 1.0);
-
-        glClear(GL_COLOR_BUFFER_BIT);
-
-        glDisable(GL_BLEND);
-        glUseProgram(gBgProg);
-        u2(gBgProg, "uRes", (float)winW, (float)winH);
-        uf(gBgProg, "uTime", (float)gTime);
-        glBindVertexArray(gBgVAO);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
-
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_ONE, GL_ONE);
-        glBlendEquation(dim3 ? GL_MAX : GL_FUNC_ADD);  /* MAX: no 3D whiteout */
-        if (gMode == MODE_TRAPPED && gSegCount > 0) {
-            glUseProgram(gPathProg);
-            u2(gPathProg, "uCam", gCamX, gCamY);
-            uf(gPathProg, "uScale", 2.0f / gWorldH);
-            u2(gPathProg, "uAspect", (float)winH / (float)winW, 1.0f);
-            uf(gPathProg, "uRot", gAz);
-            uf(gPathProg, "uGlowR", gGlowR);
-            uf(gPathProg, "uCoreW", gCoreW);
-            uf(gPathProg, "uHead", gHead);
-            uf(gPathProg, "uTime", (float)gTime);
-            uf(gPathProg, "uTrail", trail);
-            ui(gPathProg, "uPalette", gPalette);
-            ui(gPathProg, "uMode", 0);
-            glUniform3fv(glGetUniformLocation(gPathProg, "uTint"), 8, &gTint[0][0]);
-            glBindVertexArray(gPathVAO);
-            glDrawArraysInstanced(GL_TRIANGLES, 0, 6, gSegCount);
-        } else if (gMode == MODE_COMPETITIVE && gPieceN > 0) {
-            glUseProgram(gCloudProg);
-            u3(gCloudProg, "uCenter", gCamX, gCamY, gCamZ);
-            uf(gCloudProg, "uAz", gAz);
-            uf(gCloudProg, "uEl", gEl);
-            uf(gCloudProg, "uScale", 2.0f / gWorldH);
-            u2(gCloudProg, "uAspect", (float)winH / (float)winW, 1.0f);
-            uf(gCloudProg, "uPointR", gPointR);
-            uf(gCloudProg, "uReveal", gReveal);
-            uf(gCloudProg, "uRadius", gRadius);
-            uf(gCloudProg, "uDim3D", dim3 ? 1.0f : 0.0f);
-            uf(gCloudProg, "uTangent", (gTangent && dim3) ? 1.0f : 0.0f);
-            glUniform3fv(glGetUniformLocation(gCloudProg, "uTint"), 8, &gTint[0][0]);
-            glBindVertexArray(gCloudVAO);
-            glDrawArraysInstanced(GL_TRIANGLES, 0, 6, gPieceN);
-        }
-        glBlendEquation(GL_FUNC_ADD);
-        glDisable(GL_BLEND);
-
-        if (shotMode && totalFrames == 3) shotReq = 1;
-        if (shotReq) {
-            save_screenshot();
-            shotReq = 0;
-            if (shotMode) glfwSetWindowShouldClose(win, 1);
-        }
-
-        glfwSwapBuffers(win);
-        glfwPollEvents();
-
-        frames++;
-        totalFrames++;
-        titleAcc += dt;
-        if (titleAcc >= 0.5) {
-            int count = (gMode == MODE_TRAPPED) ? gSegCount : gPieceN;
-            char rev[32] = "";
-            if (gMode == MODE_COMPETITIVE) {
-                int sh = (int)gReveal;
-                if (sh > gMaxShell) sh = gMaxShell;
-                snprintf(rev, sizeof rev, "  shell %d/%d", sh, gMaxShell);
-            }
-            char title[256];
-            snprintf(title, sizeof title,
-                "Trapped Knight  |  \"%s\" [%s%s]  |  %d items%s  |  %.0f fps%s%s",
-                gScenes[gCurScene].name,
-                gMode == MODE_COMPETITIVE ? "competitive" : "trapped",
-                dim3 ? " 3D" : "", count, rev, frames / titleAcc,
-                gStepMode ? "  STEP" : (gAutoCycle ? "  cycle" : ""),
-                gPaused ? "  [PAUSED]" : "");
-            glfwSetWindowTitle(win, title);
-            if (bench)
-                fprintf(stderr, "[fps] %.0f  (%s)\n",
-                        frames / titleAcc, rend ? rend : "?");
-            frames = 0;
-            titleAcc = 0.0;
-        }
-    }
-
+#ifdef __EMSCRIPTEN__
+    emscripten_set_main_loop(frame, 0, 1);
+#else
+    while (!glfwWindowShouldClose(gWin)) frame();
     free(gPath);
     free(gPieces);
     free(gSpiral);
@@ -1240,7 +1339,8 @@ int main(void)
     glDeleteProgram(gBgProg);
     glDeleteProgram(gPathProg);
     glDeleteProgram(gCloudProg);
-    glfwDestroyWindow(win);
+    glfwDestroyWindow(gWin);
     glfwTerminate();
+#endif
     return 0;
 }
