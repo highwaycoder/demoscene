@@ -72,7 +72,7 @@ dim     = 3
 armies  = knight, zebra, camel
 tint    = #ff3344, #33ff99, #ffcc33
 pieces  = 120000
-growth  = 12
+growth  = 75
 ```
 
 As you find combinations that make cool patterns, just append them.

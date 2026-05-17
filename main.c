@@ -692,8 +692,9 @@ static void apply_scene(int idx)
         rebuild_competitive();
         gReveal = 0.0f;
         gPointR = (s->dim == 3) ? 0.85f : 0.55f;
+        /* fast default -- about 7 'up' steps above the old baseline */
         gShellRate = (s->growth > 0.0f) ? s->growth
-                                        : (float)(gMaxShell + 1) / 0.6f;
+                                        : (float)(gMaxShell + 1) / 0.6f * 6.2749f;
         gBaseEl = (s->dim == 3) ? 0.42f : 1.5708f;
     }
     gEl = gBaseEl;
