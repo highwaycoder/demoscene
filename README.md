@@ -51,8 +51,8 @@ make
 ./trappedknight
 ```
 
-Run it from this directory — it loads its shaders and `scenes.cfg` by relative
-path. On startup it prints, e.g. `[walk] Knight : 2016 squares … square 2084`.
+Run it from this directory — it loads its shaders, `leapers.cfg` and
+`scenes.cfg` by relative path (`leapers.cfg` is required). On startup it prints, e.g. `[walk] Knight : 2016 squares … square 2084`.
 
 ## Scenes
 

@@ -485,29 +485,17 @@ static void scene_defaults(Scene *s)
     }
 }
 
-static void load_default_leapers(void)
-{
-    static const struct { const char *n; int a, b, c; } DEF[] = {
-        { "Knight",1,2,0 }, { "Zebra",2,3,0 }, { "Antelope",3,4,0 },
-        { "Camel",1,3,0 }, { "Giraffe",1,4,0 }, { "Ferz",1,1,0 },
-        { "Wazir",1,0,0 }, { "Alfil",2,2,0 }, { "Dabbaba",2,0,0 },
-        { "Unicorn",1,1,1 }, { "Wyvern",2,1,1 },
-    };
-    gLeaperN = (int)(sizeof DEF / sizeof DEF[0]);
-    for (int i = 0; i < gLeaperN; i++) {
-        snprintf(gLeapers[i].name, sizeof gLeapers[i].name, "%s", DEF[i].n);
-        gLeapers[i].a = DEF[i].a;
-        gLeapers[i].b = DEF[i].b;
-        gLeapers[i].c = DEF[i].c;
-    }
-}
-
-/* parse leapers.cfg lines "name = a b c"; falls back to the built-in set */
-static void parse_leapers(void)
+/* Parse leapers.cfg lines "name = a b c"; returns the leaper count.
+   Returns 0 (roster left untouched) if the file is missing or has no valid
+   entries -- there is NO built-in fallback, so a running program is itself
+   proof that leapers.cfg was read. */
+static int parse_leapers(void)
 {
     char *txt = read_file("leapers.cfg");
-    if (!txt) { load_default_leapers(); return; }
-    gLeaperN = 0;
+    if (!txt) return 0;
+
+    Leaper tmp[MAX_LEAPERS];
+    int n = 0;
     char *save = NULL;
     for (char *line = strtok_r(txt, "\n", &save); line;
          line = strtok_r(NULL, "\n", &save)) {
@@ -517,21 +505,21 @@ static void parse_leapers(void)
         if (!eq) continue;
         *eq = 0;
         char *name = trim(t), *val = trim(eq + 1);
-        if (!*name || gLeaperN >= MAX_LEAPERS) continue;
+        if (!*name || n >= MAX_LEAPERS) continue;
         for (char *p = val; *p; p++) if (*p == ',') *p = ' ';
         int a = 0, b = 0, c = 0;
         int got = sscanf(val, "%d %d %d", &a, &b, &c);
         if (got < 2) continue;
         if (got < 3) c = 0;
-        snprintf(gLeapers[gLeaperN].name, sizeof gLeapers[gLeaperN].name,
-                 "%s", name);
-        gLeapers[gLeaperN].a = a;
-        gLeapers[gLeaperN].b = b;
-        gLeapers[gLeaperN].c = c;
-        gLeaperN++;
+        snprintf(tmp[n].name, sizeof tmp[n].name, "%s", name);
+        tmp[n].a = a; tmp[n].b = b; tmp[n].c = c;
+        n++;
     }
     free(txt);
-    if (gLeaperN == 0) load_default_leapers();
+    if (n == 0) return 0;
+    for (int i = 0; i < n; i++) gLeapers[i] = tmp[i];
+    gLeaperN = n;
+    return n;
 }
 
 static void parse_scenes(void)
@@ -1080,7 +1068,12 @@ int main(void)
     build_cell3_table();
     for (int a = 0; a < 8; a++)
         for (int c = 0; c < 3; c++) gTint[a][c] = DEF_TINT[a][c];
-    parse_leapers();
+    if (!parse_leapers()) {
+        fprintf(stderr, "error: leapers.cfg is missing or empty -- "
+                        "the program needs it to define the pieces.\n");
+        glfwTerminate();
+        return 1;
+    }
     parse_scenes();
     apply_scene(startScene);
     print_help();
@@ -1131,12 +1124,17 @@ int main(void)
             if (reload_prog(&gCloudProg, "cloud.vert", "cloud.frag", NULL))
                 fprintf(stderr, "[shader] cloud reloaded\n"); }
         if (scf != mtSc || lcf != mtLc) { mtSc = scf; mtLc = lcf;
-            parse_leapers();
-            parse_scenes();
-            apply_scene(gCurScene);
-            gHead = (float)gSegCount;
-            gReveal = (float)gMaxShell + 2.0f;       /* show the edit at once */
-            fprintf(stderr, "[config] reloaded\n"); }
+            if (parse_leapers()) {
+                parse_scenes();
+                apply_scene(gCurScene);
+                gHead = (float)gSegCount;
+                gReveal = (float)gMaxShell + 2.0f;   /* show the edit at once */
+                fprintf(stderr, "[config] reloaded\n");
+            } else {
+                fprintf(stderr, "[config] leapers.cfg unreadable -- "
+                                "kept the previous roster\n");
+            }
+        }
 
         /* cinematic camera */
         if (gCine) {
