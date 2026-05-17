@@ -30,8 +30,11 @@ void main()
     vec3 tint = uTint[idx];
 
     /* 3D: the outer ~one shell stays full bright, deeper shells fall off
-       fast toward nothing -- the interior fades as the surface passes it */
-    float surf      = mix(1.0, exp(-0.14 * max(vFront - 1.0, 0.0)), uDim3D);
+       fast toward nothing -- the interior fades as the surface passes it.
+       vFront is capped so the fade SATURATES: stepping the reveal cannot
+       slide the whole sphere's brightness, only the outer band changes. */
+    float vf        = min(vFront, 12.0);
+    float surf      = mix(1.0, exp(-0.14 * max(vf - 1.0, 0.0)), uDim3D);
     /* 3D: the far hemisphere is dimmer, so the sphere reads with depth */
     float depthFade = mix(1.0, mix(0.35, 1.0, vDepth), uDim3D);
     /* a subtle, tinted lift on the freshly revealed shell-front */

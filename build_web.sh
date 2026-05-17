@@ -15,7 +15,7 @@ emcc main.c -O2 -std=gnu11 \
     -sMIN_WEBGL_VERSION=2 -sMAX_WEBGL_VERSION=2 \
     -sFULL_ES3=1 \
     -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=67108864 \
-    -sEXPORTED_FUNCTIONS=_main,_tk_key,_tk_scene,_tk_resize \
+    -sEXPORTED_FUNCTIONS=_main,_tk_key,_tk_scene,_tk_resize,_tk_apply_config \
     -sEXPORTED_RUNTIME_METHODS=ccall,UTF8ToString \
     --preload-file bg.frag \
     --preload-file path.vert --preload-file path.frag \
@@ -23,4 +23,7 @@ emcc main.c -O2 -std=gnu11 \
     --preload-file scenes.cfg --preload-file leapers.cfg \
     -o docs/trappedknight.js
 
-echo "built -> docs/trappedknight.{js,wasm,data}"
+# also ship the configs standalone, so the in-browser editor can fetch them
+cp scenes.cfg leapers.cfg docs/
+
+echo "built -> docs/trappedknight.{js,wasm,data} + scenes.cfg + leapers.cfg"

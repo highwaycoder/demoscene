@@ -102,7 +102,6 @@ As you find combinations that make cool patterns, just append them.
 | `space` / `r`  | pause / restart the reveal              |
 | `up` / `down`  | growth rate (shells revealed per second)|
 | `,` / `.`      | step the reveal back / forward one shell|
-| `-` / `=`      | fewer / more pieces (grow / shrink the sphere)|
 | `c`            | cinematic camera (slow rotate + breathe)|
 | `o`            | auto-cycle scenes on / off              |
 | `t`            | comet trail on / off                    |

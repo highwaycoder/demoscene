@@ -727,7 +727,7 @@ static float  gCamX = 0, gCamY = 0, gCamZ = 0;
 static float  gWorldH = 60.0f, gBaseWorldH = 60.0f, gRadius = 30.0f;
 static float  gAz = 0.6f, gEl = 1.5708f, gBaseEl = 1.5708f;
 static float  gHead = 0.0f;                 /* trapped: revealed instances */
-static float  gReveal = 0.0f, gShellRate = 60.0f;  /* competitive: shells */
+static float  gReveal = 0.0f, gRevealTarget = 0.0f, gShellRate = 60.0f;
 static int    gPieceCap = 6000;             /* competitive: piece count cap */
 static float  gGlowR = 0.42f, gCoreW = 0.05f, gPointR = 0.55f;
 
@@ -756,6 +756,34 @@ static void fit_camera(void)
     gBaseWorldH = need + 4.0f;
     if (gBaseWorldH < 8.0f) gBaseWorldH = 8.0f;
     gWorldH = gBaseWorldH;
+}
+
+/* compact one-line summary of the pieces a scene uses, for the UI;
+   runs of the same leaper collapse to "knight x4" */
+static void scene_desc(int idx, char *out, size_t n)
+{
+    Scene *s = &gScenes[idx];
+    if (s->mode == MODE_TRAPPED) {
+        snprintf(out, n, "trapped - %s", gLeapers[s->leaper].name);
+        return;
+    }
+    char arms[128];
+    arms[0] = 0;
+    int a = 0;
+    while (a < s->nArmies) {
+        int j = a;
+        while (j < s->nArmies && s->armies[j] == s->armies[a]) j++;
+        if (arms[0]) strncat(arms, ", ", sizeof arms - strlen(arms) - 1);
+        strncat(arms, gLeapers[s->armies[a]].name,
+                sizeof arms - strlen(arms) - 1);
+        if (j - a > 1) {
+            char x[16];
+            snprintf(x, sizeof x, " x%d", j - a);
+            strncat(arms, x, sizeof arms - strlen(arms) - 1);
+        }
+        a = j;
+    }
+    snprintf(out, n, "%s - %s", s->dim == 3 ? "3D" : "2D", arms);
 }
 
 /* recompute the current competitive scene at the current piece cap */
@@ -791,6 +819,7 @@ static void apply_scene(int idx)
         gPieceCap = s->pieceCap;
         rebuild_competitive();
         gReveal = 0.0f;
+        gRevealTarget = 0.0f;
         gPointR = (s->dim == 3) ? 0.85f : 0.55f;
         gShellRate = (s->growth > 0.0f) ? s->growth
                                         : (float)(gMaxShell + 1) / 0.6f * 6.2749f;
@@ -801,7 +830,12 @@ static void apply_scene(int idx)
     fit_camera();
     gHoldTimer = 0.0;
     gStepMode = 0;
-    printf("[scene] %d/%d  \"%s\"\n", idx + 1, gSceneN, s->name);
+    char desc[160];
+    scene_desc(idx, desc, sizeof desc);
+    printf("[scene] %d/%d  \"%s\"  (%s)\n", idx + 1, gSceneN, s->name, desc);
+#ifdef __EMSCRIPTEN__
+    EM_ASM({ if (window.tkSelectScene) tkSelectScene($0); }, gCurScene);
+#endif
 }
 
 /* ===== screenshot (desktop only) ========================================== */
@@ -837,7 +871,6 @@ static void print_help(void)
     "   r            restart the reveal\n"
     "   up / down    growth rate (shells per second)\n"
     "   , / .        step the reveal back / forward one shell\n"
-    "   - / =        fewer / more pieces (sphere size)\n"
     "   c            cinematic camera (orbit + breathe)\n"
     "   o            auto-cycle scenes on / off\n"
     "   t            comet trail on / off (trapped mode)\n"
@@ -884,8 +917,8 @@ static void on_key(GLFWwindow *win, int key, int sc, int action, int mods)
     case GLFW_KEY_ESCAPE:
     case GLFW_KEY_Q:     if (tap) glfwSetWindowShouldClose(win, 1);          break;
     case GLFW_KEY_SPACE: if (tap) gPaused ^= 1;                             break;
-    case GLFW_KEY_R:     if (tap) { gReveal = 0.0f; gHoldTimer = 0.0;
-                                    gStepMode = 0; }                       break;
+    case GLFW_KEY_R:     if (tap) { gReveal = 0.0f; gRevealTarget = 0.0f;
+                                    gHoldTimer = 0.0; gStepMode = 0; }      break;
     case GLFW_KEY_H:     if (tap) print_help();                             break;
     case GLFW_KEY_G:     if (tap) shotReq = 1;                              break;
     case GLFW_KEY_TAB:   if (tap) apply_scene(gCurScene + 1);               break;
@@ -937,31 +970,17 @@ static void on_key(GLFWwindow *win, int key, int sc, int action, int mods)
     case GLFW_KEY_PERIOD:                    /* step the reveal +1 shell */
         if (gMode == MODE_COMPETITIVE) {
             gStepMode = 1;
-            int shp = (int)(gReveal + 0.5f) + 1;
+            int shp = (int)(gRevealTarget + 0.5f) + 1;
             if (shp > gMaxShell + 1) shp = gMaxShell + 1;
-            gReveal = (float)shp;
+            gRevealTarget = (float)shp;
         }
         break;
     case GLFW_KEY_COMMA:                     /* step the reveal -1 shell */
         if (gMode == MODE_COMPETITIVE) {
             gStepMode = 1;
-            int shm = (int)(gReveal + 0.5f) - 1;
+            int shm = (int)(gRevealTarget + 0.5f) - 1;
             if (shm < 0) shm = 0;
-            gReveal = (float)shm;
-        }
-        break;
-    case GLFW_KEY_EQUAL:                     /* more pieces -> bigger sphere */
-        if (tap && gMode == MODE_COMPETITIVE) {
-            gPieceCap = (int)(gPieceCap * 1.4f);
-            if (gPieceCap > MAX_PIECE) gPieceCap = MAX_PIECE;
-            rebuild_competitive();
-        }
-        break;
-    case GLFW_KEY_MINUS:                     /* fewer pieces */
-        if (tap && gMode == MODE_COMPETITIVE) {
-            gPieceCap = (int)(gPieceCap / 1.4f);
-            if (gPieceCap < 2000) gPieceCap = 2000;
-            rebuild_competitive();
+            gRevealTarget = (float)shm;
         }
         break;
     default: break;
@@ -1007,6 +1026,20 @@ static void u3(GLuint p, const char *n, float a, float b, float c)
 
 /* ===== browser control hooks ============================================== */
 #ifdef __EMSCRIPTEN__
+/* (re)send the scene list + piece descriptions to the HTML control panel */
+static void push_scene_list(void)
+{
+    EM_ASM({ if (window.tkClearScenes) tkClearScenes(); });
+    char d[160];
+    for (int i = 0; i < gSceneN; i++) {
+        scene_desc(i, d, sizeof d);
+        EM_ASM({ if (window.tkAddScene)
+                   tkAddScene($0, UTF8ToString($1), UTF8ToString($2)); },
+               i, gScenes[i].name, d);
+    }
+    EM_ASM({ if (window.tkSelectScene) tkSelectScene($0); }, gCurScene);
+}
+
 /* the HTML control panel drives the app through these.  tk_key reuses the
    whole keyboard handler, so a button is just a synthetic key press. */
 EMSCRIPTEN_KEEPALIVE void tk_key(int key) { on_key(gWin, key, 0, GLFW_PRESS, 0); }
@@ -1018,6 +1051,22 @@ EMSCRIPTEN_KEEPALIVE void tk_resize(int w, int h)
     winW = w; winH = h;
     glViewport(0, 0, w, h);
     fit_camera();
+}
+/* replace leapers.cfg + scenes.cfg in the virtual filesystem and re-parse,
+   so browser users can edit the configs at runtime */
+EMSCRIPTEN_KEEPALIVE void tk_apply_config(const char *leapers, const char *scenes)
+{
+    FILE *f;
+    f = fopen("leapers.cfg", "wb"); if (f) { fputs(leapers, f); fclose(f); }
+    f = fopen("scenes.cfg",  "wb"); if (f) { fputs(scenes,  f); fclose(f); }
+    if (parse_leapers()) {
+        parse_scenes();
+        apply_scene(0);
+        push_scene_list();
+        EM_ASM({ if (window.tkConfigResult) tkConfigResult(1); });
+    } else {
+        EM_ASM({ if (window.tkConfigResult) tkConfigResult(0); });
+    }
 }
 #endif
 
@@ -1031,9 +1080,15 @@ static void frame(void)
 
     if (!gPaused) {
         gTime += dt;
-        if (gMode == MODE_COMPETITIVE && !gStepMode &&
-            gReveal <= (float)gMaxShell + 1.0f)
-            gReveal += gShellRate * (float)dt;
+        if (gMode == MODE_COMPETITIVE) {
+            if (gStepMode)
+                gReveal += (gRevealTarget - gReveal)      /* ease, don't jump */
+                           * fminf(1.0f, (float)dt * 9.0f);
+            else if (gReveal <= (float)gMaxShell + 1.0f) {
+                gReveal += gShellRate * (float)dt;
+                gRevealTarget = gReveal;
+            }
+        }
     }
     int revealed = (gMode == MODE_TRAPPED) || (gReveal > (float)gMaxShell);
     if (revealed && !gPaused && !gStepMode) {
@@ -1312,10 +1367,7 @@ int main(void)
     print_help();
 
 #ifdef __EMSCRIPTEN__
-    /* hand the scene list to the HTML control panel */
-    for (int i = 0; i < gSceneN; i++)
-        EM_ASM({ if (window.tkAddScene) tkAddScene($0, UTF8ToString($1)); },
-               i, gScenes[i].name);
+    push_scene_list();
     EM_ASM({ if (window.tkReady) tkReady($0); }, gCurScene);
 #endif
 
@@ -1323,6 +1375,7 @@ int main(void)
         gHead = (float)gSegCount;
         gReveal = (gShotFrac >= 1.0f) ? (float)gMaxShell + 2.0f
                                       : (float)gMaxShell * gShotFrac;
+        gRevealTarget = gReveal;
         gTime = 20.0; gAz = 0.7f;
     }
 

@@ -13,7 +13,7 @@
   #canvas { position:fixed; inset:0; width:100vw; height:100vh; display:block;
             background:#06060d; }
   #panel {
-    position:fixed; top:14px; left:14px; width:248px; padding:14px 14px 12px;
+    position:fixed; top:14px; left:14px; width:250px; padding:14px 14px 12px;
     background:rgba(12,13,24,0.86); border:1px solid rgba(120,140,200,0.22);
     border-radius:12px; backdrop-filter:blur(6px);
     box-shadow:0 8px 30px rgba(0,0,0,0.5); user-select:none;
@@ -22,12 +22,13 @@
   #panel .sub { margin:0 0 11px; font-size:11px; color:#8b90a8; }
   label.fld { display:block; font-size:10.5px; text-transform:uppercase;
               letter-spacing:0.7px; color:#8b90a8; margin:9px 0 4px; }
-  select, button { font:inherit; color:var(--ink); }
+  select, button, textarea { font:inherit; color:var(--ink); }
   select {
-    width:100%; padding:6px 7px; font-size:12.5px;
+    width:100%; padding:6px 7px; font-size:12px;
     background:#1a1c30; border:1px solid rgba(120,140,200,0.28);
     border-radius:7px; cursor:pointer;
   }
+  #scenedesc { margin-top:4px; font-size:10.5px; color:#8b90a8; min-height:13px; }
   .row { display:flex; gap:5px; margin-top:5px; flex-wrap:wrap; }
   button {
     flex:1 1 auto; padding:6px 4px; font-size:11.5px; cursor:pointer;
@@ -38,6 +39,7 @@
   button:hover { background:#262a44; border-color:rgba(120,140,200,0.5); }
   button:active { background:#33384f; }
   button.mini { flex:0 0 30px; font-weight:600; }
+  button.wide { flex:1 1 100%; }
   .grp { display:flex; align-items:center; gap:5px; margin-top:5px; }
   .grp span { font-size:11px; color:#8b90a8; flex:1 1 auto; }
   #status { margin-top:11px; font-size:10.5px; color:#8b90a8;
@@ -47,12 +49,30 @@
   #loading {
     position:fixed; inset:0; display:flex; align-items:center;
     justify-content:center; flex-direction:column; gap:10px;
-    background:#06060d; color:#8b90a8; font-size:14px; z-index:20;
+    background:#06060d; color:#8b90a8; font-size:14px; z-index:30;
   }
   #loading .dot { width:30px; height:30px; border-radius:50%;
     border:3px solid rgba(95,212,255,0.25); border-top-color:var(--accent);
     animation:spin 0.9s linear infinite; }
   @keyframes spin { to { transform:rotate(360deg); } }
+  /* config editor */
+  #editor { position:fixed; inset:0; z-index:25; display:none;
+            align-items:center; justify-content:center;
+            background:rgba(4,4,10,0.72); }
+  #editor.open { display:flex; }
+  #editbox { width:min(720px,94vw); max-height:90vh; overflow:auto;
+    padding:18px; background:#0d0e1c; color:var(--ink);
+    border:1px solid rgba(120,140,200,0.3); border-radius:12px;
+    box-shadow:0 16px 50px rgba(0,0,0,0.6); }
+  #editbox h2 { margin:0 0 3px; font-size:15px; }
+  #editbox p { margin:0 0 12px; font-size:11.5px; color:#8b90a8; }
+  #editbox textarea {
+    width:100%; background:#06060f; border:1px solid rgba(120,140,200,0.28);
+    border-radius:7px; color:#cfe8ff; padding:8px;
+    font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px;
+    resize:vertical;
+  }
+  #editmsg { font-size:11.5px; min-height:16px; margin-top:8px; }
 </style>
 </head>
 <body>
@@ -67,6 +87,7 @@
 
   <label class="fld" for="scene">Scene</label>
   <select id="scene"></select>
+  <div id="scenedesc"></div>
 
   <div class="row" style="margin-top:8px;">
     <button type="button" data-k="32">Pause</button>
@@ -88,9 +109,6 @@
   <div class="grp"><span>Step shell</span>
     <button type="button" class="mini" data-k="44">&minus;</button>
     <button type="button" class="mini" data-k="46">+</button></div>
-  <div class="grp"><span>Piece count</span>
-    <button type="button" class="mini" data-k="45">&minus;</button>
-    <button type="button" class="mini" data-k="61">+</button></div>
 
   <label class="fld">Palette</label>
   <div class="row">
@@ -99,31 +117,72 @@
     <button type="button" class="mini" data-k="51">3</button>
     <button type="button" class="mini" data-k="52">4</button>
     <button type="button" class="mini" data-k="53">5</button>
-    <button type="button" data-k="70">Fullscreen</button>
+    <button type="button" data-k="70">Full</button>
+  </div>
+
+  <div class="row" style="margin-top:9px;">
+    <button type="button" class="wide" id="editbtn">&#9998; Edit leapers &amp; scenes</button>
   </div>
 
   <div id="status">starting…</div>
   <div id="hint">Drag to rotate · scroll to zoom</div>
 </div>
 
-<script>
-  /* called from the C program (via EM_ASM) once it has booted */
-  var tkRuntimeReady = false;
+<div id="editor">
+  <div id="editbox">
+    <h2>Leapers &amp; scenes</h2>
+    <p>Define the pieces and the scenes that use them, then Apply. A leaper
+       is <code>name = a b c</code> (two numbers = flat piece, three = 3D).
+       This is the most interesting thing to tinker with.</p>
+    <label class="fld" for="edLeapers">leapers.cfg</label>
+    <textarea id="edLeapers" rows="8" spellcheck="false"></textarea>
+    <label class="fld" for="edScenes">scenes.cfg</label>
+    <textarea id="edScenes" rows="15" spellcheck="false"></textarea>
+    <div id="editmsg"></div>
+    <div class="row" style="margin-top:10px;">
+      <button type="button" id="applybtn">Apply</button>
+      <button type="button" id="resetbtn">Reset to defaults</button>
+      <button type="button" id="closebtn">Close</button>
+    </div>
+  </div>
+</div>
 
-  window.tkAddScene = function (i, name) {
+<script>
+  var tkRuntimeReady = false;
+  var sceneNames = [], sceneDescs = [];
+  var defLeapers = '', defScenes = '';
+
+  /* ---- hooks the C program calls (via EM_ASM) ---- */
+  window.tkClearScenes = function () {
+    document.getElementById('scene').innerHTML = '';
+    sceneNames = []; sceneDescs = [];
+  };
+  window.tkAddScene = function (i, name, desc) {
+    sceneNames[i] = name; sceneDescs[i] = desc;
     var opt = document.createElement('option');
-    opt.value = i; opt.textContent = name;
+    opt.value = i;
+    opt.textContent = name + '   ·   ' + desc;
     document.getElementById('scene').appendChild(opt);
+  };
+  window.tkSelectScene = function (i) {
+    document.getElementById('scene').value = i;
+    document.getElementById('scenedesc').textContent = sceneDescs[i] || '';
   };
   window.tkReady = function (cur) {
     tkRuntimeReady = true;
-    document.getElementById('scene').value = cur;
+    window.tkSelectScene(cur);
     document.getElementById('panel').classList.remove('disabled');
     document.getElementById('loading').style.display = 'none';
     fitCanvas();
   };
   window.tkStatus = function (s) {
     document.getElementById('status').textContent = s;
+  };
+  window.tkConfigResult = function (ok) {
+    var m = document.getElementById('editmsg');
+    if (ok) { m.style.color = '#7fe0a0'; m.textContent = '✓ applied'; }
+    else    { m.style.color = '#ff8a8a';
+              m.textContent = '✗ leapers.cfg has no valid leapers — kept the previous setup'; }
   };
 
   function key(code) {
@@ -144,6 +203,36 @@
       Module._tk_scene(+this.value);
   });
   window.addEventListener('resize', fitCanvas);
+
+  /* ---- config editor ---- */
+  function loadConfigs() {
+    fetch('leapers.cfg').then(r => r.text()).then(t => {
+      defLeapers = t; document.getElementById('edLeapers').value = t;
+    }).catch(function(){});
+    fetch('scenes.cfg').then(r => r.text()).then(t => {
+      defScenes = t; document.getElementById('edScenes').value = t;
+    }).catch(function(){});
+  }
+  document.getElementById('editbtn').addEventListener('click', function () {
+    document.getElementById('editmsg').textContent = '';
+    document.getElementById('editor').classList.add('open');
+  });
+  document.getElementById('closebtn').addEventListener('click', function () {
+    document.getElementById('editor').classList.remove('open');
+  });
+  document.getElementById('resetbtn').addEventListener('click', function () {
+    document.getElementById('edLeapers').value = defLeapers;
+    document.getElementById('edScenes').value = defScenes;
+    document.getElementById('editmsg').textContent = '';
+  });
+  document.getElementById('applybtn').addEventListener('click', function () {
+    if (!tkRuntimeReady || !Module || !Module.ccall) return;
+    Module.ccall('tk_apply_config', null, ['string', 'string'],
+      [document.getElementById('edLeapers').value,
+       document.getElementById('edScenes').value]);
+  });
+
+  loadConfigs();
 
   var Module = {
     canvas: document.getElementById('canvas'),
