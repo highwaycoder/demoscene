@@ -152,6 +152,18 @@
   var sceneNames = [], sceneDescs = [];
   var defLeapers = '', defScenes = '';
 
+  /* Keep keystrokes destined for a text field away from the Emscripten/GLFW
+     key handler -- otherwise it preventDefault()s Backspace (and others) and
+     eats them while you edit the config. Registered before trappedknight.js
+     loads, in the capture phase, so it runs first. */
+  ['keydown', 'keypress', 'keyup'].forEach(function (type) {
+    window.addEventListener(type, function (e) {
+      var n = e.target && e.target.tagName;
+      if (n === 'TEXTAREA' || n === 'INPUT' || n === 'SELECT')
+        e.stopImmediatePropagation();
+    }, true);
+  });
+
   /* ---- hooks the C program calls (via EM_ASM) ---- */
   window.tkClearScenes = function () {
     document.getElementById('scene').innerHTML = '';
@@ -196,7 +208,8 @@
   }
 
   document.querySelectorAll('button[data-k]').forEach(function (b) {
-    b.addEventListener('click', function () { key(+b.dataset.k); });
+    /* blur after click so a focused button doesn't double-handle the keys */
+    b.addEventListener('click', function () { key(+b.dataset.k); b.blur(); });
   });
   document.getElementById('scene').addEventListener('change', function () {
     if (tkRuntimeReady && Module && Module._tk_scene)
