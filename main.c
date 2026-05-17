@@ -36,16 +36,12 @@
 #include <sys/stat.h>
 
 /* ===== leapers ============================================================ */
-/* a leaper jumps so its move's sorted |components| equal {a,b,c}; the 2D
-   pieces have c = 0, the 3D-native ones use all three axes */
-typedef struct { const char *name; int a, b, c; } Leaper;
-static const Leaper LEAPERS[] = {
-    { "Knight",   1, 2, 0 }, { "Zebra",    2, 3, 0 }, { "Antelope", 3, 4, 0 },
-    { "Camel",    1, 3, 0 }, { "Giraffe",  1, 4, 0 }, { "Ferz",     1, 1, 0 },
-    { "Wazir",    1, 0, 0 }, { "Alfil",    2, 2, 0 }, { "Dabbaba",  2, 0, 0 },
-    { "Unicorn",  1, 1, 1 }, { "Wyvern",   2, 1, 1 },   /* 3D-native */
-};
-#define NLEAP ((int)(sizeof(LEAPERS) / sizeof(LEAPERS[0])))
+/* a leaper jumps so its move's sorted |components| equal {a,b,c}; the roster
+   is loaded from leapers.cfg (or a built-in default set) */
+#define MAX_LEAPERS 64
+typedef struct { char name[24]; int a, b, c; } Leaper;
+static Leaper gLeapers[MAX_LEAPERS];
+static int    gLeaperN = 0;
 
 static const float DEF_TINT[8][3] = {
     { 1.00, 0.25, 0.30 }, { 0.25, 0.55, 1.00 }, { 0.35, 1.00, 0.45 },
@@ -181,7 +177,7 @@ static int   gHitCap = 0;
 static void compute_path(int leaper)
 {
     int mv[8][2];
-    int nm = gen_moves(LEAPERS[leaper].a, LEAPERS[leaper].b, mv);
+    int nm = gen_moves(gLeapers[leaper].a, gLeapers[leaper].b, mv);
     int side = 2 * GRID_R + 1;
     unsigned char *vis = calloc((size_t)side * side, 1);
     Pt *path = malloc(sizeof(Pt) * MOVE_CAP);
@@ -218,7 +214,7 @@ static void compute_path(int leaper)
     gTrapSquare = lastIdx;
     gHitCap = (n >= MOVE_CAP);
     printf("[walk]  %-9s : %d squares, %s on spiral square %ld\n",
-           LEAPERS[leaper].name, n,
+           gLeapers[leaper].name, n,
            gHitCap ? "stopped at move cap" : "trapped", gTrapSquare);
 }
 
@@ -238,7 +234,7 @@ static void compute_competitive_2d(const int *armies, int K, int cap)
 
     int mv[8][8][2], nm[8];
     for (int a = 0; a < K; a++)
-        nm[a] = gen_moves(LEAPERS[armies[a]].a, LEAPERS[armies[a]].b, mv[a]);
+        nm[a] = gen_moves(gLeapers[armies[a]].a, gLeapers[armies[a]].b, mv[a]);
 
     int side = 2 * GRID_R + 1;
     unsigned char *occ   = calloc((size_t)side * side, 1);
@@ -293,8 +289,8 @@ static void compute_competitive_3d(const int *armies, int K, int cap)
 
     int mv[8][48][3], nm[8];
     for (int a = 0; a < K; a++)
-        nm[a] = gen_moves_3d(LEAPERS[armies[a]].a, LEAPERS[armies[a]].b,
-                             LEAPERS[armies[a]].c, mv[a]);
+        nm[a] = gen_moves_3d(gLeapers[armies[a]].a, gLeapers[armies[a]].b,
+                             gLeapers[armies[a]].c, mv[a]);
 
     int M = SHELL3D, side = 2*M + 1;
     long vol = (long)side * side * side;
@@ -450,8 +446,8 @@ static int   gSceneN = 0, gCurScene = 0;
 
 static int leaper_by_name(const char *s)
 {
-    for (int i = 0; i < NLEAP; i++)
-        if (strcasecmp(s, LEAPERS[i].name) == 0) return i;
+    for (int i = 0; i < gLeaperN; i++)
+        if (strcasecmp(s, gLeapers[i].name) == 0) return i;
     return -1;
 }
 
@@ -487,6 +483,55 @@ static void scene_defaults(Scene *s)
         s->armies[a] = 0;
         for (int c = 0; c < 3; c++) s->tint[a][c] = DEF_TINT[a][c];
     }
+}
+
+static void load_default_leapers(void)
+{
+    static const struct { const char *n; int a, b, c; } DEF[] = {
+        { "Knight",1,2,0 }, { "Zebra",2,3,0 }, { "Antelope",3,4,0 },
+        { "Camel",1,3,0 }, { "Giraffe",1,4,0 }, { "Ferz",1,1,0 },
+        { "Wazir",1,0,0 }, { "Alfil",2,2,0 }, { "Dabbaba",2,0,0 },
+        { "Unicorn",1,1,1 }, { "Wyvern",2,1,1 },
+    };
+    gLeaperN = (int)(sizeof DEF / sizeof DEF[0]);
+    for (int i = 0; i < gLeaperN; i++) {
+        snprintf(gLeapers[i].name, sizeof gLeapers[i].name, "%s", DEF[i].n);
+        gLeapers[i].a = DEF[i].a;
+        gLeapers[i].b = DEF[i].b;
+        gLeapers[i].c = DEF[i].c;
+    }
+}
+
+/* parse leapers.cfg lines "name = a b c"; falls back to the built-in set */
+static void parse_leapers(void)
+{
+    char *txt = read_file("leapers.cfg");
+    if (!txt) { load_default_leapers(); return; }
+    gLeaperN = 0;
+    char *save = NULL;
+    for (char *line = strtok_r(txt, "\n", &save); line;
+         line = strtok_r(NULL, "\n", &save)) {
+        char *t = trim(line);
+        if (!*t || *t == '#' || *t == ';') continue;
+        char *eq = strchr(t, '=');
+        if (!eq) continue;
+        *eq = 0;
+        char *name = trim(t), *val = trim(eq + 1);
+        if (!*name || gLeaperN >= MAX_LEAPERS) continue;
+        for (char *p = val; *p; p++) if (*p == ',') *p = ' ';
+        int a = 0, b = 0, c = 0;
+        int got = sscanf(val, "%d %d %d", &a, &b, &c);
+        if (got < 2) continue;
+        if (got < 3) c = 0;
+        snprintf(gLeapers[gLeaperN].name, sizeof gLeapers[gLeaperN].name,
+                 "%s", name);
+        gLeapers[gLeaperN].a = a;
+        gLeapers[gLeaperN].b = b;
+        gLeapers[gLeaperN].c = c;
+        gLeaperN++;
+    }
+    free(txt);
+    if (gLeaperN == 0) load_default_leapers();
 }
 
 static void parse_scenes(void)
@@ -642,6 +687,7 @@ static int    fullscreen = 0, vsync = 1, shotReq = 0;
 static int    sx, sy, sw, sh;
 static int    gPalette = 0;
 static int    gPaused = 0, gCine = 1, gAutoCycle = 0, gTrail = 0, gStepMode = 0;
+static int    gTangent = 0;                 /* 0 = billboard, 1 = surface tile */
 static int    gDragging = 0;
 static double gDragX = 0.0, gDragY = 0.0;
 static double gTime = 0.0, gHoldTimer = 0.0;
@@ -751,6 +797,7 @@ static void print_help(void)
     "   c            cinematic camera (orbit + breathe)\n"
     "   o            auto-cycle scenes on / off\n"
     "   t            comet trail on / off (trapped mode)\n"
+    "   m            piece style: billboard / surface-tile (3D)\n"
     "   left-drag    rotate the view (orbit in 3D)\n"
     "   w a s d      pan      z / x  zoom      b  fit\n"
     "   [ / ]        glow / piece size       1..5  palette\n"
@@ -802,6 +849,7 @@ static void on_key(GLFWwindow *win, int key, int sc, int action, int mods)
     case GLFW_KEY_TAB:   if (tap) apply_scene(gCurScene + 1);               break;
     case GLFW_KEY_O:     if (tap) gAutoCycle ^= 1;                          break;
     case GLFW_KEY_T:     if (tap) gTrail ^= 1;                              break;
+    case GLFW_KEY_M:     if (tap) gTangent ^= 1;                            break;
     case GLFW_KEY_C:     if (tap) { gCine ^= 1; if (gCine) fit_camera(); }  break;
     case GLFW_KEY_B:     if (tap) { fit_camera(); gCine = 1; }              break;
     case GLFW_KEY_V:     if (tap) { vsync ^= 1; glfwSwapInterval(vsync); }  break;
@@ -920,6 +968,7 @@ int main(void)
     float shotFrac = (shotEnv && atof(shotEnv) > 0.0 && atof(shotEnv) < 1.0)
                      ? (float)atof(shotEnv) : 1.0f;
     int startScene = getenv("TK_SCENE") ? atoi(getenv("TK_SCENE")) : 0;
+    if (getenv("TK_TILES")) gTangent = 1;
 
     {
         struct stat dxg;
@@ -1025,12 +1074,13 @@ int main(void)
     time_t mtBg = file_mtime("bg.frag");
     time_t mtPv = file_mtime("path.vert"),  mtPf = file_mtime("path.frag");
     time_t mtCv = file_mtime("cloud.vert"), mtCf = file_mtime("cloud.frag");
-    time_t mtSc = file_mtime("scenes.cfg");
+    time_t mtSc = file_mtime("scenes.cfg"), mtLc = file_mtime("leapers.cfg");
 
     build_spiral_table(2600000);
     build_cell3_table();
     for (int a = 0; a < 8; a++)
         for (int c = 0; c < 3; c++) gTint[a][c] = DEF_TINT[a][c];
+    parse_leapers();
     parse_scenes();
     apply_scene(startScene);
     print_help();
@@ -1070,7 +1120,7 @@ int main(void)
         time_t b  = file_mtime("bg.frag");
         time_t pv = file_mtime("path.vert"),  pf = file_mtime("path.frag");
         time_t cv = file_mtime("cloud.vert"), cf = file_mtime("cloud.frag");
-        time_t scf = file_mtime("scenes.cfg");
+        time_t scf = file_mtime("scenes.cfg"), lcf = file_mtime("leapers.cfg");
         if (b != mtBg) { mtBg = b;
             if (reload_prog(&gBgProg, NULL, "bg.frag", FS_VERT))
                 fprintf(stderr, "[shader] bg reloaded\n"); }
@@ -1080,12 +1130,13 @@ int main(void)
         if (cv != mtCv || cf != mtCf) { mtCv = cv; mtCf = cf;
             if (reload_prog(&gCloudProg, "cloud.vert", "cloud.frag", NULL))
                 fprintf(stderr, "[shader] cloud reloaded\n"); }
-        if (scf != mtSc) { mtSc = scf;
+        if (scf != mtSc || lcf != mtLc) { mtSc = scf; mtLc = lcf;
+            parse_leapers();
             parse_scenes();
             apply_scene(gCurScene);
             gHead = (float)gSegCount;
             gReveal = (float)gMaxShell + 2.0f;       /* show the edit at once */
-            fprintf(stderr, "[scenes] reloaded\n"); }
+            fprintf(stderr, "[config] reloaded\n"); }
 
         /* cinematic camera */
         if (gCine) {
@@ -1138,6 +1189,7 @@ int main(void)
             uf(gCloudProg, "uReveal", gReveal);
             uf(gCloudProg, "uRadius", gRadius);
             uf(gCloudProg, "uDim3D", dim3 ? 1.0f : 0.0f);
+            uf(gCloudProg, "uTangent", (gTangent && dim3) ? 1.0f : 0.0f);
             glUniform3fv(glGetUniformLocation(gCloudProg, "uTint"), 8, &gTint[0][0]);
             glBindVertexArray(gCloudVAO);
             glDrawArraysInstanced(GL_TRIANGLES, 0, 6, gPieceN);

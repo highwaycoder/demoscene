@@ -1,40 +1,39 @@
 #version 330 core
 /* ===========================================================================
-   cloud.vert -- billboards a placed piece (2D or 3D competitive placement)
-   into a glowing quad, seen through an orbiting orthographic camera.
+   cloud.vert -- places a glowing piece for 2D/3D competitive placement.
 
-   The reveal is by SHELL: a piece appears the instant uReveal reaches its
-   shell index, so whole concentric shells pop in at once and the pattern
-   grows as a disc (2D) or sphere (3D).
+   uTangent picks the piece style:
+     0 = camera-facing billboard  -- cheap, rotationally symmetric, never
+         foreshortens (the default).
+     1 = surface-tangent tile     -- the quad lies flat on the sphere, so it
+         turns with the surface and foreshortens toward the silhouette.
 
-   Billboarding is intentional (cheap, no per-piece mesh); because each piece
-   is a full circle it is rotationally symmetric, so it reads cleanly as the
-   sphere turns.  Hot-reloads on save.
+   Reveal is by SHELL: a piece appears once uReveal reaches its shell index.
+   Hot-reloads on save.
    =========================================================================== */
 
 layout(location = 0) in vec2  aCorner;   // shared unit quad: x in {0,1}, y in {-1,1}
 layout(location = 1) in vec3  aPos;      // piece position (z = 0 in 2D scenes)
 layout(location = 2) in vec2  aMeta;     // x = army index, y = shell index
 
-uniform vec3  uCenter;    // orbit pivot, world coords
-uniform float uAz;        // camera azimuth
-uniform float uEl;        // camera elevation (pi/2 = straight down => 2D)
-uniform float uScale;     // world -> NDC
-uniform vec2  uAspect;    // (winH/winW, 1)
-uniform float uPointR;    // piece disc radius, world units
-uniform float uReveal;    // current revealed shell (fractional)
-uniform float uRadius;    // scene bounding radius (depth-fade reference)
+uniform vec3  uCenter;
+uniform float uAz;
+uniform float uEl;
+uniform float uScale;
+uniform vec2  uAspect;
+uniform float uPointR;
+uniform float uReveal;
+uniform float uRadius;
+uniform float uTangent;   // 0 = billboard, 1 = surface-tangent tile
 
-out  vec2  vLocal;        // billboard corner, centred in [-1,1]^2
+out  vec2  vLocal;
 flat out float vArmy;
-out  float vFront;        // uReveal - shell  (0 = just appeared, big = deep in)
-out  float vDepth;        // view depth, 0 (far side) .. 1 (near side)
+out  float vFront;
+out  float vDepth;
 
 void main()
 {
-    /* the shared quad spans x in {0,1}; recentre it so the piece is a full
-       disc, not a half-disc */
-    vec2 c = vec2(aCorner.x * 2.0 - 1.0, aCorner.y);
+    vec2 c = vec2(aCorner.x * 2.0 - 1.0, aCorner.y);   /* centred quad */
 
     float shell = aMeta.y;
     if (shell > uReveal) {                       /* not revealed yet -> cull */
@@ -48,16 +47,25 @@ void main()
     vec3 rt  = vec3(-sa, ca, 0.0);               /* screen right */
     vec3 up  = cross(dir, rt);                   /* screen up */
 
-    vec3  q      = aPos - uCenter;
+    vec3 rel = aPos - uCenter;
+    vec3 q   = rel;
+    if (uTangent > 0.5) {
+        /* lay the quad flat on the sphere surface (its tangent plane) */
+        vec3 nrm = (length(rel) > 1e-4) ? normalize(rel) : vec3(0.0, 0.0, 1.0);
+        vec3 ref = (abs(nrm.z) < 0.9) ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+        vec3 t1  = normalize(cross(ref, nrm));
+        vec3 t2  = cross(nrm, t1);
+        q = rel + (c.x * t1 + c.y * t2) * uPointR;
+    }
+
     vec2  screen = vec2(dot(q, rt), dot(q, up));
     float depth  = dot(q, dir);
-
-    vec2 p = screen + c * uPointR;               /* billboard the quad */
+    if (uTangent <= 0.5) screen += c * uPointR;  /* camera-facing billboard */
 
     vLocal = c;
     vArmy  = aMeta.x;
     vFront = uReveal - shell;
     vDepth = clamp(depth / max(uRadius, 1.0) * 0.5 + 0.5, 0.0, 1.0);
 
-    gl_Position = vec4(p * uScale * uAspect, 0.0, 1.0);
+    gl_Position = vec4(screen * uScale * uAspect, 0.0, 1.0);
 }

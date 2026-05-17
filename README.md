@@ -25,10 +25,10 @@ multi-coloured sphere.
 The pattern is the point, not the path — the reveal is fast by default; its
 *growth rate* (shells per second) is the thing to tune.
 
-Both work with eleven leapers: Knight, Zebra, Antelope, Camel, Giraffe, Ferz,
-Wazir, Alfil, Dabbaba, plus the **3D-native** Unicorn (1,1,1) and Wyvern
-(2,1,1) — pieces that step on all three axes at once, so they only exist in
-the 3D scenes.
+Both work with the leapers defined in **`leapers.cfg`** — Knight, Zebra,
+Antelope, Camel, Giraffe, Ferz, Wazir, Alfil, Dabbaba, plus the **3D-native**
+Unicorn (1,1,1) and Wyvern (2,1,1), which step on all three axes at once. Add
+your own leapers by editing that file (it hot-reloads).
 
 The phenomenon was found independently by Neil Sloane and Jonas Karlsson, and
 popularised by Numberphile — [The Trapped Knight](https://www.youtube.com/watch?v=RGQe8waGJ4w).
@@ -91,6 +91,7 @@ As you find combinations that make cool patterns, just append them.
 | `c`            | cinematic camera (slow rotate + breathe)|
 | `o`            | auto-cycle scenes on / off              |
 | `t`            | comet trail on / off                    |
+| `m`            | piece style: billboard vs surface-tile (3D)|
 | left-drag      | rotate the view (orbit the sphere in 3D)|
 | `w a s d`      | pan       `z` / `x` zoom      `b` fit   |
 | `[` / `]`      | glow radius      `1`–`5` palette        |
