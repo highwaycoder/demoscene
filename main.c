@@ -36,11 +36,14 @@
 #include <sys/stat.h>
 
 /* ===== leapers ============================================================ */
-typedef struct { const char *name; int a, b; } Leaper;
+/* a leaper jumps so its move's sorted |components| equal {a,b,c}; the 2D
+   pieces have c = 0, the 3D-native ones use all three axes */
+typedef struct { const char *name; int a, b, c; } Leaper;
 static const Leaper LEAPERS[] = {
-    { "Knight",   1, 2 }, { "Zebra",    2, 3 }, { "Antelope", 3, 4 },
-    { "Camel",    1, 3 }, { "Giraffe",  1, 4 }, { "Ferz",     1, 1 },
-    { "Wazir",    1, 0 }, { "Alfil",    2, 2 }, { "Dabbaba",  2, 0 },
+    { "Knight",   1, 2, 0 }, { "Zebra",    2, 3, 0 }, { "Antelope", 3, 4, 0 },
+    { "Camel",    1, 3, 0 }, { "Giraffe",  1, 4, 0 }, { "Ferz",     1, 1, 0 },
+    { "Wazir",    1, 0, 0 }, { "Alfil",    2, 2, 0 }, { "Dabbaba",  2, 0, 0 },
+    { "Unicorn",  1, 1, 1 }, { "Wyvern",   2, 1, 1 },   /* 3D-native */
 };
 #define NLEAP ((int)(sizeof(LEAPERS) / sizeof(LEAPERS[0])))
 
@@ -68,21 +71,28 @@ static int gen_moves(int a, int b, int out[8][2])
     return n;
 }
 
-/* 3D leaper moves: every (dx,dy,dz) whose sorted |components| are {0,a,b} --
-   i.e. a along one axis, b along another, 0 along the third. */
-static int gen_moves_3d(int a, int b, int out[24][3])
+static void sort3(int *p)
 {
-    int hi = a > b ? a : b;
-    int lo = a < b ? a : b;
-    int n = 0;
+    int t;
+    if (p[0] > p[1]) { t = p[0]; p[0] = p[1]; p[1] = t; }
+    if (p[1] > p[2]) { t = p[1]; p[1] = p[2]; p[2] = t; }
+    if (p[0] > p[1]) { t = p[0]; p[0] = p[1]; p[1] = t; }
+}
+
+/* 3D leaper moves: every (dx,dy,dz) whose sorted |components| match the
+   leaper's {a,b,c}.  {a,b,0} pieces stay 2D-style; {1,1,1} and friends are
+   genuinely three-dimensional. */
+static int gen_moves_3d(int a, int b, int c, int out[48][3])
+{
+    int tgt[3] = { a, b, c };
+    sort3(tgt);
+    int hi = tgt[2], n = 0;
     for (int dx = -hi; dx <= hi; dx++)
     for (int dy = -hi; dy <= hi; dy++)
     for (int dz = -hi; dz <= hi; dz++) {
-        int p = dx<0?-dx:dx, q = dy<0?-dy:dy, r = dz<0?-dz:dz, t;
-        if (p > q) { t=p; p=q; q=t; }
-        if (q > r) { t=q; q=r; r=t; }
-        if (p > q) { t=p; p=q; q=t; }            /* p<=q<=r */
-        if (p == 0 && q == lo && r == hi && n < 24) {
+        int p[3] = { dx<0?-dx:dx, dy<0?-dy:dy, dz<0?-dz:dz };
+        sort3(p);
+        if (p[0] == tgt[0] && p[1] == tgt[1] && p[2] == tgt[2] && n < 48) {
             out[n][0] = dx; out[n][1] = dy; out[n][2] = dz; n++;
         }
     }
@@ -126,7 +136,7 @@ static void build_spiral_table(int maxn)
 }
 
 /* ===== shell-ordered 3D lattice =========================================== */
-#define SHELL3D 70
+#define SHELL3D 100
 typedef struct { short x, y, z; } Cell3;
 static Cell3 *gCell3 = NULL;
 static int    gCell3N = 0;
@@ -157,9 +167,9 @@ static void build_cell3_table(void)
     free(cur);
 }
 
-#define GRID_R    760
+#define GRID_R    850
 #define MOVE_CAP  120000
-#define MAX_PIECE 350000
+#define MAX_PIECE 800000
 
 /* ===== trapped-knight walk ================================================ */
 typedef struct { float x, y; } Pt;
@@ -281,9 +291,10 @@ static void compute_competitive_3d(const int *armies, int K, int cap)
     if (cap < 1)         cap = 1;
     if (cap > MAX_PIECE) cap = MAX_PIECE;
 
-    int mv[8][24][3], nm[8];
+    int mv[8][48][3], nm[8];
     for (int a = 0; a < K; a++)
-        nm[a] = gen_moves_3d(LEAPERS[armies[a]].a, LEAPERS[armies[a]].b, mv[a]);
+        nm[a] = gen_moves_3d(LEAPERS[armies[a]].a, LEAPERS[armies[a]].b,
+                             LEAPERS[armies[a]].c, mv[a]);
 
     int M = SHELL3D, side = 2*M + 1;
     long vol = (long)side * side * side;
@@ -1016,7 +1027,7 @@ int main(void)
     time_t mtCv = file_mtime("cloud.vert"), mtCf = file_mtime("cloud.frag");
     time_t mtSc = file_mtime("scenes.cfg");
 
-    build_spiral_table(1500000);
+    build_spiral_table(2600000);
     build_cell3_table();
     for (int a = 0; a < 8; a++)
         for (int c = 0; c < 3; c++) gTint[a][c] = DEF_TINT[a][c];

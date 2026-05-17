@@ -25,8 +25,10 @@ multi-coloured sphere.
 The pattern is the point, not the path — the reveal is fast by default; its
 *growth rate* (shells per second) is the thing to tune.
 
-Both work with any of nine leapers: Knight, Zebra, Antelope, Camel, Giraffe,
-Ferz, Wazir, Alfil, Dabbaba.
+Both work with eleven leapers: Knight, Zebra, Antelope, Camel, Giraffe, Ferz,
+Wazir, Alfil, Dabbaba, plus the **3D-native** Unicorn (1,1,1) and Wyvern
+(2,1,1) — pieces that step on all three axes at once, so they only exist in
+the 3D scenes.
 
 The phenomenon was found independently by Neil Sloane and Jonas Karlsson, and
 popularised by Numberphile — [The Trapped Knight](https://www.youtube.com/watch?v=RGQe8waGJ4w).
